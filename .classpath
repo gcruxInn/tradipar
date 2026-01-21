@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<classpath>
+	<classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER/org.eclipse.jdt.internal.debug.ui.launcher.StandardVMType/JavaSE-1.8"/>
+	<classpathentry kind="src" path="src"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/activiti-engine-5.17.0.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/commons-codec-1.3.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/commons-fileupload-1.2.2.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/commons-io-2.1.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/dwf-4.8b386.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/gson-2.1.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/itextpdf-5.4.0.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/jape-4.8b386.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/jasperreports-1.1.0.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/javax.servlet.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/jbossall-client.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/jboss-j2ee.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/jdom.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/joda-time-2.10.13.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/json-20140107.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/json-simple-1.1.1.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/jsoup-1.11.3.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/kotlin-stdlib-1.3.61.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/mgecom-model-4.7b421 2.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/mgecom-model-4.7b421.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/mge-modelcore-3.32b143.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/mge-modulemgr-4.8b386.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/mge-param-4.8b386.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/mgeprod-4.16b16.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/mgeprod-model-4.21b37.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/mgeworkflow-model-4.16b16.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/PHERIALIZE-1.2.4.JAR"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/poi-3.9-20121203.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/poi-ooxml-3.9-20121203.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/poi-ooxml-schemas-3.9-20121203.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/print-service-base.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/san-jasper-client-4.8b386 2.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/san-jasper-client-4.8b386.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/sankhya-commons-3.32b143.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/SankhyaW-extensions.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/sanutil.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/sanutil-4.8b386.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/sanws-3.32b143.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/SendSignalEvent.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/snk-integracao-sigep.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/SWService.jar"/>
+	<classpathentry kind="lib" path="C:/eclipse-workspace/workspace_guru/Sankhya/w3c-dom.jar"/>
+	<classpathentry kind="lib" path="C:/Users/pedro/Downloads/commons-logging-1.2.jar"/>
+	<classpathentry kind="lib" path="C:/Users/pedro/Downloads/httpcore-4.4.13.jar"/>
+	<classpathentry kind="lib" path="C:/Users/pedro/Downloads/httpclient-4.5.13.jar"/>
+	<classpathentry kind="output" path="bin"/>
+</classpath>
