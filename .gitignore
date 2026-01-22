@@ -1,0 +1,21 @@
+# Build artifacts
+*.jar
+*.class
+build/
+bin/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Sankhya libs (downloaded separately)
+lib/
+
+# OS
+.DS_Store
+Thumbs.db
+*:Zone.Identifier
+
+# Logs
+*.log
