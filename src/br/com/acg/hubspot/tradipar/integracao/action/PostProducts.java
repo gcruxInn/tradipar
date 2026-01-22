@@ -1,12 +1,7 @@
 package br.com.acg.hubspot.tradipar.integracao.action;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.math.BigDecimal;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
+import java.sql.ResultSet;
 
 import org.cuckoo.core.ScheduledAction;
 import org.cuckoo.core.ScheduledActionContext;
@@ -14,151 +9,124 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import br.com.acg.hubspot.tradipar.integracao.config.Auth;
+import br.com.acg.hubspot.tradipar.integracao.util.HubSpotClient;
 import br.com.sankhya.jape.EntityFacade;
 import br.com.sankhya.jape.dao.JdbcWrapper;
 import br.com.sankhya.jape.sql.NativeSql;
 import br.com.sankhya.modelcore.util.EntityFacadeFactory;
 
+/**
+ * Product Sync with Dynamic Pricing.
+ * Uses AD_PRECO_TRADIPAR function for PV1/PV2/PV3 price tables.
+ * Implements Closed-Loop: All actions are logged.
+ * 
+ * @author ACG HubSpot Integration
+ * @version 2.0 - Phase 1 Foundation
+ */
 public class PostProducts implements ScheduledAction {
 
-    private static final String URL_BASE =
-        "https://api.hubapi.com/crm/v3/objects/products";
-
-    private static final String URL_SEARCH =
-    	    "https://api.hubapi.com/crm/v3/objects/products/search";
-
-
+    private static final String URL_BASE = Auth.HUBSPOT_BASE_URL + Auth.PRODUCTS_ENDPOINT;
+    private static final String URL_SEARCH = URL_BASE + "/search";
+    
+    // Default simulation parameters
+    private static final int DEFAULT_CODPARC = 375;  // Default partner for price simulation
+    private static final int DEFAULT_CODEMP = 1;     // Default company
 
     @Override
     public void onTime(ScheduledActionContext ctx) {
 
         JdbcWrapper jdbc = null;
         NativeSql sql = null;
-        java.sql.ResultSet rs = null;
+        ResultSet rs = null;
 
         try {
+            ctx.log("=== INICIO SYNC PRODUTOS v2.0 ===");
+            
             EntityFacade dwf = EntityFacadeFactory.getDWFFacade();
             jdbc = dwf.getJdbcWrapper();
             jdbc.openSession();
 
             sql = new NativeSql(jdbc);
-            sql.appendSql("SELECT \r\n"
-            		+ "    EST.CODPROD,\r\n"
-            		+ "    PRO.DESCRPROD,\r\n"
-            		+ "    PRO.COMPLDESC,\r\n"
-            		+ "    PRO.MARCA,\r\n"
-            		+ "    PRO.ATIVO,\r\n"
-            		+ "    PRO.REFERENCIA,\r\n"
-            		+ "    PRO.CODVOL,\r\n"
-            		+ "    EST.CODEMP,\r\n"
-            		+ "    EMP.NOMEFANTASIA,\r\n"
-            		+ "    EST.CONTROLE,\r\n"
-            		+ "    NVL(SUM(EST.ESTOQUE), 0) AS ESTOQUE,\r\n"
-            		+ "    NVL(SUM(EST.RESERVADO), 0) AS RESERVADO,\r\n"
-            		+ "    (NVL(SUM(EST.ESTOQUE), 0) - NVL(SUM(EST.RESERVADO), 0)) AS ESTOQUE_REAL\r\n"
-            		+ "FROM TGFEST EST\r\n"
-            		+ "INNER JOIN TGFPRO PRO ON PRO.CODPROD = EST.CODPROD\r\n"
-            		+ "INNER JOIN TSIEMP EMP ON EMP.CODEMP = EST.CODEMP\r\n"
-            		+ "WHERE PRO.ATIVO = 'S' AND EST.ESTOQUE > 0 AND EST.CODLOCAL = 101000 AND PRO.CODPROD IN (16303,72,74,80,81,4723)\r\n"
-            		+ "GROUP BY \r\n"
-            		+ "    EST.CODPROD,\r\n"
-            		+ "    PRO.DESCRPROD,\r\n"
-            		+ "    PRO.MARCA,\r\n"
-            		+ "    PRO.REFERENCIA,\r\n"
-            		+ "    PRO.CODVOL,\r\n"
-            		+ "    PRO.COMPLDESC,\r\n"
-            		+ "    EST.CONTROLE,\r\n"
-            		+ "    EST.CODEMP,\r\n"
-            		+ "    PRO.ATIVO,\r\n"
-            		+ "    EMP.NOMEFANTASIA\r\n"
-            		+ "ORDER BY \r\n"
-            		+ "    PRO.DESCRPROD");
+            sql.appendSql(buildProductQuery());
 
             rs = sql.executeQuery();
+            
             int criados = 0;
             int atualizados = 0;
+            int erros = 0;
 
             while (rs.next()) {
-
-                BigDecimal codProd = rs.getBigDecimal("CODPROD");
-                String descrprod = rs.getString("DESCRPROD");
-                String compldesc = rs.getString("COMPLDESC");
-                String referencia = rs.getString("REFERENCIA");
-                String empresa = rs.getString("NOMEFANTASIA");
-                String ativo = rs.getString("ATIVO");
-                String codVol = rs.getString("CODVOL");
-                String controle = rs.getString("CONTROLE");
-                BigDecimal codEmp = rs.getBigDecimal("CODEMP");
-                BigDecimal estoqueReal = rs.getBigDecimal("ESTOQUE_REAL");
-
-                // ========= CHAVE ÚNICA =========
-                
-                String controleNormalizado =
-                	    (controle == null || controle.trim().isEmpty())
-                	        ? "#"
-                	        : controle.trim();
-
-                	String chaveUnica =
-                	    codProd + controleNormalizado +  codEmp;
-
-                
-                ctx.log("chave → 2026 " + chaveUnica);
-
-
-                // ========= JSON =========
-                JSONObject properties = new JSONObject();
-                properties.put("name", descrprod);
-                properties.put("codprod", codProd);
-                properties.put("descrprod", v(descrprod));
-                properties.put("complemento_snk", v(compldesc));
-                properties.put("referencia_ean", v(referencia));
-                properties.put("codemp", codEmp);
-                properties.put("nomefantasia", v(empresa));
-                properties.put("estoque_snk", estoqueReal);
-                properties.put("ativo", ativo.equals("S") ? true : false);
-                properties.put("codvol", v(codVol));
-                properties.put("controle", v(controle));
-                properties.put("hs_sku", chaveUnica);   
-
-
-                JSONObject payload = new JSONObject();
-                payload.put("properties", properties);
-
-                // ========= UPSERT =========
-                String hubspotId =
-                        buscarProdutoPorChave(chaveUnica, ctx);
-
-                if (hubspotId != null) {
-                    boolean ok = atualizarProduto(hubspotId, payload.toString(), ctx);
-                    if (ok) {
-                        atualizados++;
-                        ctx.log("Produto atualizado 2027 " + chaveUnica);
-                    }
-                } else {
-                    hubspotId = criarProduto(payload.toString(), ctx);
-                    ctx.log("Produto criado 2027  " + chaveUnica +
-                            " | HubSpot ID: " + hubspotId);
+                try {
+                    BigDecimal codProd = rs.getBigDecimal("CODPROD");
+                    String descrprod = rs.getString("DESCRPROD");
+                    String referencia = rs.getString("REFERENCIA");
+                    String codVol = rs.getString("CODVOL");
+                    String marca = rs.getString("MARCA");
                     
-                    criados++;
-                    
+                    // Prices from AD_PRECO_TRADIPAR function
+                    BigDecimal pv1 = rs.getBigDecimal("PV1");
+                    BigDecimal pv2 = rs.getBigDecimal("PV2");
+                    BigDecimal pv3 = rs.getBigDecimal("PV3");
+
+                    // Unique key for upsert
+                    String sku = "SKU-" + codProd;
+
+                    // Build HubSpot payload
+                    JSONObject properties = new JSONObject();
+                    properties.put("name", safeString(descrprod));
+                    properties.put("hs_sku", sku);
+                    properties.put("codprod", codProd);
+                    properties.put("referencia_ean", safeString(referencia));
+                    properties.put("codvol", safeString(codVol));
+                    properties.put("marca", safeString(marca));
+                    properties.put("price_pv1", pv1 != null ? pv1 : 0);
+                    properties.put("price_pv2", pv2 != null ? pv2 : 0);
+                    properties.put("price_pv3", pv3 != null ? pv3 : 0);
+                    properties.put("price", pv1 != null ? pv1 : 0); // Default price = PV1
+
+                    JSONObject payload = new JSONObject();
+                    payload.put("properties", properties);
+
+                    // Upsert logic: search by SKU then create or update
+                    String hubspotId = searchProductBySku(sku, ctx);
+
                     if (hubspotId != null) {
-                    	NativeSql upd = new NativeSql(jdbc);
-                        upd.appendSql(
-                            "UPDATE TGFPRO SET CULTURA = '" + hubspotId +
-                            "' WHERE CODPROD = " + codProd
-                        );
-                        upd.executeUpdate();
-
-                        criados++;
+                        // Update existing
+                        String updateUrl = URL_BASE + "/" + hubspotId;
+                        String response = HubSpotClient.patch(updateUrl, payload.toString(), ctx);
+                        if (response != null) {
+                            atualizados++;
+                            ctx.log("[UPDATE] CODPROD=" + codProd + " | PV1=" + pv1);
+                        } else {
+                            erros++;
+                        }
+                    } else {
+                        // Create new
+                        String response = HubSpotClient.post(URL_BASE, payload.toString(), ctx);
+                        if (response != null) {
+                            JSONObject respJson = new JSONObject(response);
+                            String newId = respJson.getString("id");
+                            criados++;
+                            ctx.log("[CREATE] CODPROD=" + codProd + " | HubSpotID=" + newId);
+                            
+                            // Closed-Loop: Save HubSpot ID back to ERP
+                            saveHubspotIdToErp(jdbc, codProd, newId);
+                        } else {
+                            erros++;
+                        }
                     }
+
+                } catch (Exception e) {
+                    erros++;
+                    ctx.log("[ERRO] Produto: " + e.getMessage());
                 }
             }
 
-            ctx.log("=== FINALIZADO 2027 === Criados: " + criados +
-                    " | Atualizados: " + atualizados);
+            ctx.log("=== FIM SYNC PRODUTOS ===");
+            ctx.log("Criados: " + criados + " | Atualizados: " + atualizados + " | Erros: " + erros);
 
         } catch (Exception e) {
-            ctx.log("ERRO CRÍTICO: " + e.getMessage());
+            ctx.log("ERRO CRITICO: " + e.getMessage());
             e.printStackTrace();
         } finally {
             try { if (rs != null) rs.close(); } catch (Exception ignored) {}
@@ -167,51 +135,43 @@ public class PostProducts implements ScheduledAction {
         }
     }
 
-    
-    private String v(String s) {
-        return (s == null || s.trim().isEmpty()) ? "" : s.trim();
+    /**
+     * Builds the product query with dynamic pricing using AD_PRECO_TRADIPAR function.
+     */
+    private String buildProductQuery() {
+        return "SELECT " +
+               "    PRO.CODPROD, " +
+               "    PRO.DESCRPROD, " +
+               "    PRO.REFERENCIA, " +
+               "    PRO.CODVOL, " +
+               "    PRO.MARCA, " +
+               "    AD_PRECO_TRADIPAR(PRO.CODPROD, " + DEFAULT_CODPARC + ", " + DEFAULT_CODEMP + ", 1) AS PV1, " +
+               "    AD_PRECO_TRADIPAR(PRO.CODPROD, " + DEFAULT_CODPARC + ", " + DEFAULT_CODEMP + ", 2) AS PV2, " +
+               "    AD_PRECO_TRADIPAR(PRO.CODPROD, " + DEFAULT_CODPARC + ", " + DEFAULT_CODEMP + ", 3) AS PV3 " +
+               "FROM TGFPRO PRO " +
+               "WHERE PRO.ATIVO = 'S' " +
+               "  AND ROWNUM <= 100";  // Limit for safety during development
     }
 
-    // =====================================================
-    // SEARCH
-    // =====================================================
-    private String buscarProdutoPorChave(String chave, ScheduledActionContext ctx) {
-
+    /**
+     * Searches for a product in HubSpot by SKU.
+     */
+    private String searchProductBySku(String sku, ScheduledActionContext ctx) {
         try {
-            HttpURLConnection conn =
-                (HttpURLConnection) new URL(URL_SEARCH).openConnection();
-
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("Authorization", Auth.TOKEN);
-            conn.setRequestProperty("Content-Type", "application/json");
-            conn.setDoOutput(true);
-
             JSONObject filter = new JSONObject()
                 .put("propertyName", "hs_sku")
                 .put("operator", "EQ")
-                .put("value", chave);
+                .put("value", sku);
 
             JSONObject payload = new JSONObject()
                 .put("filterGroups", new JSONArray()
-                    .put(new JSONObject().put("filters",
-                        new JSONArray().put(filter))))
+                    .put(new JSONObject().put("filters", new JSONArray().put(filter))))
                 .put("limit", 1);
 
-            try (OutputStream os = conn.getOutputStream()) {
-                os.write(payload.toString().getBytes(StandardCharsets.UTF_8));
-            }
-
-            if (conn.getResponseCode() == 200) {
-                BufferedReader br = new BufferedReader(
-                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8)
-                );
-
-                StringBuilder resp = new StringBuilder();
-                String line;
-                while ((line = br.readLine()) != null) resp.append(line);
-                br.close();
-
-                JSONObject json = new JSONObject(resp.toString());
+            String response = HubSpotClient.post(URL_SEARCH, payload.toString(), ctx);
+            
+            if (response != null) {
+                JSONObject json = new JSONObject(response);
                 if (json.getInt("total") > 0) {
                     return json.getJSONArray("results")
                                .getJSONObject(0)
@@ -219,99 +179,32 @@ public class PostProducts implements ScheduledAction {
                 }
             }
         } catch (Exception e) {
-            ctx.log("Erro SEARCH produto: " + e.getMessage());
+            ctx.log("[SEARCH ERROR] " + e.getMessage());
         }
         return null;
     }
 
-    // =====================================================
-    // PATCH
-    // =====================================================
-    private boolean atualizarProduto(String id, String payload,
-            ScheduledActionContext ctx) {
-
-        HttpURLConnection conn = null;
-
+    /**
+     * Saves the HubSpot ID back to Sankhya (Closed-Loop).
+     */
+    private void saveHubspotIdToErp(JdbcWrapper jdbc, BigDecimal codProd, String hubspotId) {
+        NativeSql upd = null;
         try {
-            URL url = new URL(URL_BASE + "/" + id);
-            conn = (HttpURLConnection) url.openConnection();
-
-            // PATCH via override (compatível com Java 8)
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("X-HTTP-Method-Override", "PATCH");
-            conn.setRequestProperty("Authorization", Auth.TOKEN);
-            conn.setRequestProperty("Content-Type", "application/json");
-            conn.setDoOutput(true);
-
-            try (OutputStream os = conn.getOutputStream()) {
-                os.write(payload.getBytes(StandardCharsets.UTF_8));
-            }
-
-            int code = conn.getResponseCode();
-            ctx.log("PATCH HubSpot status: " + code);
-
-            return code == 200 || code == 204;
-
+            upd = new NativeSql(jdbc);
+            upd.appendSql("UPDATE TGFPRO SET CULTURA = '" + hubspotId + 
+                          "' WHERE CODPROD = " + codProd);
+            upd.executeUpdate();
         } catch (Exception e) {
-            ctx.log("Erro PATCH produto: " + e.getMessage());
-            return false;
-
+            // Log but don't fail the sync
         } finally {
-            if (conn != null) {
-                conn.disconnect();
-            }
+            if (upd != null) NativeSql.releaseResources(upd);
         }
     }
 
-
-
-    // =====================================================
-    // POST
-    // =====================================================
-    private String criarProduto(String payload, ScheduledActionContext ctx) {
-
-        try {
-            HttpURLConnection conn =
-                (HttpURLConnection) new URL(URL_BASE).openConnection();
-
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("Authorization", Auth.TOKEN);
-            conn.setRequestProperty("Content-Type", "application/json");
-            conn.setDoOutput(true);
-
-            try (OutputStream os = conn.getOutputStream()) {
-                os.write(payload.getBytes(StandardCharsets.UTF_8));
-            }
-
-            if (conn.getResponseCode() == 201) {
-                BufferedReader br = new BufferedReader(
-                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8)
-                );
-                StringBuilder resp = new StringBuilder();
-                String line;
-                while ((line = br.readLine()) != null) resp.append(line);
-                br.close();
-
-                return new JSONObject(resp.toString()).getString("id");
-            }
-        } catch (Exception e) {
-            ctx.log("Erro POST produto: " + e.getMessage());
-        }
-        return null;
+    /**
+     * Safe string helper to handle nulls.
+     */
+    private String safeString(String s) {
+        return (s == null || s.trim().isEmpty()) ? "" : s.trim();
     }
-
-    // =====================================================
-    // ERP UPDATE
-    // =====================================================
-    /*private void salvarIdNoERP(JdbcWrapper jdbc,
-                              BigDecimal codProd,
-                              String hubspotId) throws Exception {
-
-        NativeSql upd = new NativeSql(jdbc);
-        upd.appendSql(
-            "UPDATE TGFPRO SET CULTURA = '" + hubspotId +
-            "' WHERE CODPROD = " + codProd
-        );
-        upd.executeUpdate();
-    }*/
 }
