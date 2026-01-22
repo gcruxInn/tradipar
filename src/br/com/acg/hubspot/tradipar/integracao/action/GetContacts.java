@@ -44,7 +44,7 @@ public class GetContacts implements ScheduledAction {
 
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
-            conn.setRequestProperty("Authorization", Auth.TOKEN);
+            conn.setRequestProperty("Authorization", Auth.getHubspotToken());
             conn.setRequestProperty("Content-Type", "application/json");
 
             BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()));

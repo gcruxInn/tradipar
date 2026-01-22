@@ -6,14 +6,8 @@ import java.io.OutputStream;
 import java.math.BigDecimal;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 
-import org.apache.http.client.methods.CloseableHttpResponse;
-import org.apache.http.client.methods.HttpPatch;
-import org.apache.http.entity.StringEntity;
-import org.apache.http.impl.client.CloseableHttpClient;
-import org.apache.http.impl.client.HttpClients;
 import org.cuckoo.core.ScheduledAction;
 import org.cuckoo.core.ScheduledActionContext;
 import org.json.JSONArray;
@@ -202,7 +196,7 @@ public class PostPartnersPf implements ScheduledAction {
                 (HttpURLConnection) new URL(URL_SEARCH).openConnection();
 
             conn.setRequestMethod("POST");
-            conn.setRequestProperty("Authorization", Auth.TOKEN);
+            conn.setRequestProperty("Authorization", Auth.getHubspotToken());
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setDoOutput(true);
 
@@ -265,7 +259,7 @@ public class PostPartnersPf implements ScheduledAction {
 
             conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
-            conn.setRequestProperty("Authorization", Auth.TOKEN);
+            conn.setRequestProperty("Authorization", Auth.getHubspotToken());
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setDoOutput(true);
 
@@ -317,7 +311,7 @@ public class PostPartnersPf implements ScheduledAction {
             ctx.log("LOGKZ2");
 
             conn.setRequestMethod("POST");
-            conn.setRequestProperty("Authorization", Auth.TOKEN);
+            conn.setRequestProperty("Authorization", Auth.getHubspotToken());
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setDoOutput(true);
             ctx.log("LOGKZ3");

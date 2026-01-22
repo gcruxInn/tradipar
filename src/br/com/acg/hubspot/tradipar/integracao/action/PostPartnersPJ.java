@@ -180,7 +180,7 @@ public class PostPartnersPJ implements ScheduledAction {
                 (HttpURLConnection) new URL(URL_SEARCH).openConnection();
 
             conn.setRequestMethod("POST");
-            conn.setRequestProperty("Authorization", Auth.TOKEN);
+            conn.setRequestProperty("Authorization", Auth.getHubspotToken());
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setDoOutput(true);
 
@@ -243,7 +243,7 @@ public class PostPartnersPJ implements ScheduledAction {
 
             conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
-            conn.setRequestProperty("Authorization", Auth.TOKEN);
+            conn.setRequestProperty("Authorization", Auth.getHubspotToken());
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setDoOutput(true);
 
@@ -295,7 +295,7 @@ public class PostPartnersPJ implements ScheduledAction {
             ctx.log("LOGKZ2");
 
             conn.setRequestMethod("POST");
-            conn.setRequestProperty("Authorization", Auth.TOKEN);
+            conn.setRequestProperty("Authorization", Auth.getHubspotToken());
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setDoOutput(true);
             ctx.log("LOGKZ3");

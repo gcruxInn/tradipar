@@ -38,12 +38,12 @@ public class GetPartnersPf implements ScheduledAction {
             EntityFacade dwf = EntityFacadeFactory.getDWFFacade();
 
             // ====== CHAMADA HTTP ======
-            String urlStr = Auth.HUBSPOT_BASE_URL + Auth.PARTHNER_ENDPOINT;
+            String urlStr = Auth.HUBSPOT_BASE_URL + "/crm/v3/objects/contacts";
             URL url = new URL(urlStr);
 
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
-            conn.setRequestProperty("Authorization", Auth.TOKEN);
+            conn.setRequestProperty("Authorization", Auth.getHubspotToken());
             conn.setRequestProperty("Content-Type", "application/json");
 
             BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream()));
