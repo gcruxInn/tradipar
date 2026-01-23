@@ -1,0 +1,12 @@
+{
+  "uid": "sankhya_precos_card",
+  "type": "card",
+  "config": {
+    "name": "Preços Sankhya",
+    "location": "crm.record.tab",
+    "entrypoint": "/app/cards/PrecosCard.tsx",
+    "objectTypes": [
+      "deals"
+    ]
+  }
+}
