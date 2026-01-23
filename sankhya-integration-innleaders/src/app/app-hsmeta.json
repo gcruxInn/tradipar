@@ -1,0 +1,33 @@
+{
+  "uid": "sankhya_integration_innleaders_app",
+  "type": "app",
+  "config": {
+    "description": "An example to demonstrate how to build a static private app with developer projects.",
+    "name": "sankhya-integration-innleaders-Application",
+    "distribution": "private",
+    "auth": {
+      "type": "static",
+      "requiredScopes": [
+        "oauth",
+        "crm.objects.deals.read",
+        "crm.objects.deals.write"
+      ],
+      "optionalScopes": [],
+      "conditionallyRequiredScopes": []
+    },
+    "permittedUrls": {
+      "fetch": [
+        "https://api.hubapi.com",
+        "https://api.gcrux.com"
+      ],
+      "iframe": [],
+      "img": []
+    },
+    "support": {
+      "supportEmail": "gabriel.rocha@innleaders.com",
+      "documentationUrl": "https://innleaders.com/",
+      "supportUrl": "https://innleaders.com/support",
+      "supportPhone": "+5511999999999"
+    }
+  }
+}
