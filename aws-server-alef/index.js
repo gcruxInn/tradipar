@@ -134,7 +134,7 @@ app.post("/precos", async (req, res) => {
       consultaPreco(codProd, codParc, codEmp, 3),
     ]);
 
-    res.json({ tabela1, tabela2, tabela3 });
+    res.json({ pv1: tabela1, pv2: tabela2, pv3: tabela3 });
   } catch (err) {
     console.error("Erro /precos:", err.response?.data || err.message || err);
 
@@ -158,8 +158,8 @@ app.post("/debug-preco", async (req, res) => {
   try {
     const codProd = toInt("codProd", req.body.codProd);
     const codParc = toInt("codParc", req.body.codParc);
-    const codEmp  = toInt("codEmp",  req.body.codEmp);
-    const seqPv   = toInt("seqPv",   req.body.seqPv);
+    const codEmp = toInt("codEmp", req.body.codEmp);
+    const seqPv = toInt("seqPv", req.body.seqPv);
 
     const sql = `
       SELECT AD_PRECO_TRADIPAR(

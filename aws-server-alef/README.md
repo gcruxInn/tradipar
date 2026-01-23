@@ -11,8 +11,9 @@ API Node.js para consulta de preços PV1/PV2/PV3 via função Sankhya `AD_PRECO_
 
 ## 📡 Endpoint
 
+**Produção (HTTPS):**
 ```
-POST http://98.92.46.144:3000/precos
+POST https://api.gcrux.com/precos
 Content-Type: application/json
 
 {
