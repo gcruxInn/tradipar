@@ -1,66 +1,56 @@
-# API Preços Sankhya (AWS Server)
+# API Preços Sankhya (AWS Proxy)
 
-API Node.js para consulta de preços PV1/PV2/PV3 via função Sankhya `AD_PRECO_TRADIPAR`.
+Servidor de proxy resiliente para integrar o HubSpot UI Extension com o Sankhya ERP em tempo real.
 
 ## 🚀 Deploy
 
-**Servidor:** AWS Lightsail (Ubuntu 22.04)  
+**Servidor:** AWS Lightsail (`api.gcrux.com`)  
 **IP:** 98.92.46.144  
-**Porta:** 3000  
-**Process Manager:** PM2
+**Process Manager:** PM2 (Executando via `index.js`)
 
-## 📡 Endpoint
+## 📡 Endpoints Principais
 
-**Produção (HTTPS):**
-```
-POST https://api.gcrux.com/precos
-Content-Type: application/json
+### 1. Consulta de Preços (Deal Context)
+Busca associações de Empresa e Item de Linha para calcular o preço dinâmico.
+- **URL:** `POST /hubspot/prices/deal`
+- **Body:** `{ "objectId": 123456 }`
+- **Response:**
+  ```json
+  {
+    "status": "SUCCESS",
+    "prices": { "pv1": 3.54, "pv2": 3.32, "pv3": 3.12 },
+    "currentAmount": "300.00"
+  }
+  ```
 
-{
-  "codProd": 8286,
-  "codParc": 375,
-  "codEmp": 1
-}
-```
+### 2. Atualização de Valor (Write-back)
+Atualiza a propriedade `amount` do Negócio no HubSpot.
+- **URL:** `POST /hubspot/update/deal`
+- **Body:** `{ "objectId": 123456, "amount": 3.32 }`
 
-**Response:**
-```json
-{
-  "tabela1": 15.375,
-  "tabela2": 14.686,
-  "tabela3": 14.057
-}
-```
+### 3. Consulta Genérica (Legacy/Generic)
+- **URL:** `POST /precos`
+- **Body:** `{ "codProd": 80, "codParc": 262, "codEmp": 1 }`
 
-## ⚙️ Instalação Local
+## 🛡️ Resiliência & Self-Healing
 
-```bash
-npm install
-cp .env.example .env
-# Editar .env com credenciais Sankhya
-npm start
-```
+O servidor implementa lógica de **Auto-Recovery**:
+- **Gateway 401**: Se o token do gateway expira, ele é renovado automaticamente.
+- **Sankhya Status 3**: Se a sessão interna do Sankhya expira ("Não autorizado"), o servidor detecta o status 3, invalida o token e tenta novamente com uma nova sessão.
 
-## 🔑 Acesso SSH
+## 🔧 Manutenção
 
 ```bash
+# Acesso SSH
 ssh -i ~/.ssh/LightsailDefaultKey-us-east-1.pem ubuntu@98.92.46.144
+
+# PM2 (Diretório ~/api-precos-sankhya)
+pm2 logs 0                 # Ver logs em tempo real
+pm2 restart 0 --update-env # Reiniciar com novas variáveis de ambiente
 ```
 
 ## 📁 Estrutura
 
-```
-├── index.js           # API Express
-├── sankhyaAuth.js     # Auth Sankhya OAuth2
-├── package.json       # Dependências
-├── .env.example       # Template de variáveis
-└── README.md
-```
-
-## 🔧 Comandos PM2
-
-```bash
-pm2 status                    # Ver status
-pm2 logs api-precos-sankhya   # Ver logs
-pm2 restart api-precos-sankhya # Reiniciar
-```
+- `index.js`: Lógica principal de rotas e busca de associações HubSpot.
+- `sankhyaAuth.js`: Gerenciamento de tokens e sessões Sankhya.
+- `.env`: Configurado com `SANKHYA_BASE_URL` e `HUBSPOT_ACCESS_TOKEN`.
