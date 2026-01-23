@@ -19,3 +19,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Node.js (aws-server-alef)
+node_modules/
+.env
+!.env.example
