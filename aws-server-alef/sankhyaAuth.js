@@ -10,6 +10,8 @@ function requireEnv(name) {
   return v;
 }
 
+let refreshingPromise = null;
+
 export async function getAccessToken() {
   const now = Date.now();
 
@@ -17,32 +19,44 @@ export async function getAccessToken() {
     return cachedToken;
   }
 
-  const baseUrl = requireEnv("SANKHYA_BASE_URL");
-  const payload = qs.stringify({
-    client_id: requireEnv("SANKHYA_CLIENT_ID"),
-    client_secret: requireEnv("SANKHYA_CLIENT_SECRET"),
-    grant_type: "client_credentials",
-  });
+  // Se já tem uma renovação em curso, espera ela
+  if (refreshingPromise) {
+    return refreshingPromise;
+  }
 
-  const resp = await axios.post(
-    `${baseUrl}/authenticate`,
-    payload,
-    {
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Token": requireEnv("SANKHYA_XTOKEN"),
-      },
-      timeout: 15000,
+  refreshingPromise = (async () => {
+    try {
+      const baseUrl = requireEnv("SANKHYA_BASE_URL");
+      const payload = qs.stringify({
+        client_id: requireEnv("SANKHYA_CLIENT_ID"),
+        client_secret: requireEnv("SANKHYA_CLIENT_SECRET"),
+        grant_type: "client_credentials",
+      });
+
+      const resp = await axios.post(
+        `${baseUrl}/authenticate`,
+        payload,
+        {
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-Token": requireEnv("SANKHYA_XTOKEN"),
+          },
+          timeout: 15000,
+        }
+      );
+
+      cachedToken = resp.data.access_token;
+      // expira um pouco antes (margem de 30s)
+      const expiresIn = Number(resp.data.expires_in || 0);
+      tokenExpiresAt = Date.now() + (expiresIn * 1000) - 30000;
+
+      return cachedToken;
+    } finally {
+      refreshingPromise = null;
     }
-  );
+  })();
 
-  cachedToken = resp.data.access_token;
-
-  // expira um pouco antes (margem de 30s)
-  const expiresIn = Number(resp.data.expires_in || 0);
-  tokenExpiresAt = now + (expiresIn * 1000) - 30000;
-
-  return cachedToken;
+  return refreshingPromise;
 }
 
 export function invalidateToken() {

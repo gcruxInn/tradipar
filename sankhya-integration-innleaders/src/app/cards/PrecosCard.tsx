@@ -10,7 +10,8 @@ import {
     Icon,
     Tooltip,
     NumberInput,
-    Button
+    Button,
+    Tag
 } from "@hubspot/ui-extensions";
 
 // Define types
@@ -19,6 +20,12 @@ interface PrecosResponse {
     pv2: number | null;
     pv3: number | null;
 }
+
+// Stage Mapping
+const STAGE_MAP: Record<string, { label: string; variant: "default" | "success" | "warning" | "error" | "info" }> = {
+    "decisionmakerboughtin": { label: "Aguardando Liberação", variant: "warning" },
+    "presentationscheduled": { label: "Pedido (Aguardando Conferência)", variant: "info" },
+};
 
 hubspot.extend<'crm.record.tab'>(({ context }) => (
     <PrecosCard
@@ -41,11 +48,22 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
     const [error, setError] = useState<string | null>(null);
     const [missingData, setMissingData] = useState<any>(null);
 
+    // Stock & Quantity State
+    const [stock, setStock] = useState<number | null>(null);
+    const [neededQty, setNeededQty] = useState<number | null>(null);
+
     // Amount State
     const [amount, setAmount] = useState<number | undefined>(undefined);
     const [saving, setSaving] = useState(false);
     const [saveError, setSaveError] = useState<string | null>(null);
     const [saveSuccess, setSaveSuccess] = useState(false);
+    const [saveWarning, setSaveWarning] = useState<string | null>(null);
+
+    // Stage State
+    const [dealStage, setDealStage] = useState<string | null>(null);
+    const [converting, setConverting] = useState(false);
+    const [convertError, setConvertError] = useState<string | null>(null);
+    const [convertSuccess, setConvertSuccess] = useState(false);
 
     // Guard to prevent multiple fetches for the same ID
     const lastFetchedId = React.useRef<number | null>(null);
@@ -76,8 +94,13 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
 
                 if (result && result.status === "SUCCESS") {
                     setPrecos(result.prices);
+                    setStock(result.stock);
+                    setNeededQty(result.quantity);
                     if (result.currentAmount) {
                         setAmount(Number(result.currentAmount));
+                    }
+                    if (result.currentStage) {
+                        setDealStage(result.currentStage);
                     }
                 } else if (result && result.status === "MISSING_DATA") {
                     setMissingData(result.details);
@@ -90,7 +113,6 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
             } catch (err: any) {
                 console.error("Erro na chamada API:", err);
                 setError(`Não foi possível carregar os preços. (${err.message})`);
-                // NÃO limpamos o guard aqui para evitar loop infinito de retentativa se o erro for persistente
             } finally {
                 setLoading(false);
             }
@@ -108,6 +130,8 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
         setSaving(true);
         setSaveError(null);
         setSaveSuccess(false);
+        setSaveWarning(null);
+
         try {
             const response = await hubspot.fetch("https://api.gcrux.com/hubspot/update/deal", {
                 method: "POST",
@@ -121,14 +145,46 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
                 throw new Error("Falha ao salvar valor");
             }
 
-            setSaveSuccess(true);
-            // Hide success message after 3 seconds
-            setTimeout(() => setSaveSuccess(false), 3000);
+            const result = await response.json();
+
+            if (result.status === "WARNING") {
+                setSaveWarning(result.message);
+            } else {
+                setSaveSuccess(true);
+                setTimeout(() => setSaveSuccess(false), 3000);
+            }
 
         } catch (err: any) {
             setSaveError(err.message);
         } finally {
             setSaving(false);
+        }
+    };
+
+    const handleConvertToOrder = async () => {
+        setConverting(true);
+        setConvertError(null);
+        setConvertSuccess(false);
+
+        try {
+            const response = await hubspot.fetch("https://api.gcrux.com/hubspot/convert-to-order", {
+                method: "POST",
+                body: { objectId: context.crm.objectId }
+            });
+
+            if (!response.ok) {
+                const errData = await response.json();
+                throw new Error(errData.error || "Erro ao converter para pedido");
+            }
+
+            setConvertSuccess(true);
+            setDealStage("presentationscheduled");
+            setTimeout(() => setConvertSuccess(false), 5000);
+
+        } catch (err: any) {
+            setConvertError(err.message);
+        } finally {
+            setConverting(false);
         }
     };
 
@@ -165,8 +221,45 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
         );
     }
 
+    const stageInfo = dealStage && STAGE_MAP[dealStage];
+
     return (
         <Flex direction="column" gap="md">
+
+            {/* ESTEIRA STATUS & ESTOQUE */}
+            <Box>
+                <Flex align="center" gap="md" justify="between">
+                    <Flex align="center" gap="xs">
+                        <Text format={{ fontWeight: "bold" }}>Status:</Text>
+                        {dealStage && (
+                            stageInfo ? (
+                                <Tag variant={stageInfo.variant}>{stageInfo.label}</Tag>
+                            ) : (
+                                <Text>{dealStage}</Text>
+                            )
+                        )}
+                    </Flex>
+
+                    {stock !== null && (
+                        <Flex align="center" gap="xs">
+                            <Text format={{ fontWeight: "bold" }}>Estoque:</Text>
+                            <Tag variant={(stock < (neededQty || 0)) ? "error" : "success"}>
+                                {stock} disponíveis
+                            </Tag>
+                        </Flex>
+                    )}
+                </Flex>
+
+                {(stock !== null && neededQty !== null && stock < neededQty) && (
+                    <Box paddingTop="xs">
+                        <Alert title="Possível Corte de Estoque" variant="error">
+                            Atenção: O estoque atual ({stock}) é menor que a quantidade do pedido ({neededQty}). O item poderá ser cortado se faturado agora.
+                        </Alert>
+                    </Box>
+                )}
+                <Divider />
+            </Box>
+
             <Flex direction="row" gap="md" justify="between">
                 {/* PV1 */}
                 <Box>
@@ -264,11 +357,10 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
                             min={0}
                             onChange={(value) => setAmount(value)}
                             onBlur={() => {
-                                // Trigger save when user leaves the field
                                 handleSaveAmount();
                             }}
-                            error={!!saveError}
-                            validationMessage={saveError ?? undefined}
+                            error={!!saveError || !!saveWarning}
+                            validationMessage={saveError ?? (saveWarning ?? undefined)}
                         />
                     </Box>
                     {saving && (
@@ -282,8 +374,37 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
                         </Box>
                     )}
                 </Flex>
+                {saveWarning && (
+                    <Alert title="Atenção" variant="warning">
+                        {saveWarning}
+                    </Alert>
+                )}
                 <Text variant="microcopy">O valor é salvo automaticamente ao clicar em Aplicar ou sair do campo.</Text>
             </Flex>
+
+            <Divider />
+
+            {/* ERROR HANDLING FOR CONVERSION */}
+            {convertError && (
+                <Alert title="Erro ao Faturar" variant="error">
+                    {convertError}
+                </Alert>
+            )}
+            {convertSuccess && (
+                <Alert title="Sucesso" variant="success">
+                    Pedido gerado com sucesso!
+                </Alert>
+            )}
+
+            {/* CONVERSION TRIGGER BUTTON */}
+            <Button
+                variant="primary"
+                onClick={handleConvertToOrder}
+                disabled={converting || (dealStage === "decisionmakerboughtin")}
+            >
+                {converting ? "Gerando Pedido..." : "Faturar (Gerar Pedido)"}
+            </Button>
+
         </Flex>
     );
 };
