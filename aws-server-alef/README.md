@@ -1,56 +1,100 @@
-# API Preços Sankhya (AWS Proxy)
+# API Preços Sankhya - HubSpot Proxy
 
-Servidor de proxy resiliente para integrar o HubSpot UI Extension com o Sankhya ERP em tempo real.
+Servidor intermediário (Proxy) que conecta o HubSpot CRM ao ERP Sankhya via DBExplorer.  
+Esta API é responsável por resolver Preços (Tabelas PV1/PV2/PV3) e Estoque disponível para Múltiplos Itens de um Negócio.
 
-## 🚀 Deploy
+## 🚀 Deploy com Docker (Recomendado)
 
-**Servidor:** AWS Lightsail (`api.gcrux.com`)  
-**IP:** 98.92.46.144  
-**Process Manager:** PM2 (Executando via `index.js`)
+Esta API foi containerizada para fácil deploy e segurança. Siga os passos abaixo para rodar em produção (ex: Oracle Cloud, AWS).
 
-## 📡 Endpoints Principais
+### 1. Preparação
+Certifique-se de ter o Docker e Docker Compose instalados no servidor.
 
-### 1. Consulta de Preços (Deal Context)
-Busca associações de Empresa e Item de Linha para calcular o preço dinâmico.
+Copie os arquivos do projeto para o servidor (ex: via `scp` ou `git clone`).
+
+### 2. Configuração Segura (.env)
+**IMPORTANTE:** Nunca comite o arquivo `.env` com senhas reais no Git.
+
+Crie um arquivo `.env` na raiz do projeto (no servidor) baseado no exemplo:
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Preencha as variáveis com os dados de produção:
+```ini
+# Credenciais Sankhya Gateway
+SANKHYA_CLIENT_ID=seu_client_id
+SANKHYA_CLIENT_SECRET=seu_client_secret
+SANKHYA_XTOKEN=seu_token_app
+
+# URL Base
+SANKHYA_BASE_URL=https://api.sankhya.com.br
+
+# Porta (Interna do Container)
+PORT=3000
+
+# Permissão HubSpot
+HUBSPOT_ACCESS_TOKEN=pat-na1-xxxxxxxx (Token de Private App)
+```
+
+### 3. Rodando o Serviço
+Utilize o `docker-compose` para subir o container de forma segura, carregando as variáveis do arquivo `.env` local.
+
+```bash
+# Construir e rodar em background
+sudo docker compose up -d --build
+
+# Ver logs em tempo real
+docker logs -f api-precos-sankhya
+```
+
+---
+
+## 📡 Endpoints
+
+### 1. Consulta de Preços e Estoque (Multi-Item)
+Endpoint principal chamado pelo Card do HubSpot.
 - **URL:** `POST /hubspot/prices/deal`
 - **Body:** `{ "objectId": 123456 }`
+- **Lógica:**
+    1. Busca todos os Itens de Linha do Negócio.
+    2. Identifica Parceiro (Company/Contact) e Empresa (Filial).
+    3. Consulta Preço (PV1/2/3) e Estoque para cada item.
 - **Response:**
   ```json
   {
     "status": "SUCCESS",
-    "prices": { "pv1": 3.54, "pv2": 3.32, "pv3": 3.12 },
-    "currentAmount": "300.00"
+    "items": [
+      {
+        "id": "123",
+        "name": "Produto X",
+        "stock": 42,
+        "stockContext": "Filial MG",
+        "prices": { "pv1": 10.0, "pv2": 9.5, "pv3": 9.0 }
+      }
+    ],
+    "currentAmount": "300.00",
+    "stageLabel": "Negociação"
   }
   ```
 
-### 2. Atualização de Valor (Write-back)
-Atualiza a propriedade `amount` do Negócio no HubSpot.
+### 2. Update de Valor (Write-back)
+Atualiza o valor total (`amount`) do Negócio.
 - **URL:** `POST /hubspot/update/deal`
-- **Body:** `{ "objectId": 123456, "amount": 3.32 }`
+- **Body:** `{ "objectId": 123456, "amount": 500.00 }`
 
-### 3. Consulta Genérica (Legacy/Generic)
-- **URL:** `POST /precos`
-- **Body:** `{ "codProd": 80, "codParc": 262, "codEmp": 1 }`
+### 3. Conversão em Pedido
+Gatilho para mover o negócio de fase.
+- **URL:** `POST /hubspot/convert-to-order`
 
-## 🛡️ Resiliência & Self-Healing
+---
 
-O servidor implementa lógica de **Auto-Recovery**:
-- **Gateway 401**: Se o token do gateway expira, ele é renovado automaticamente.
-- **Sankhya Status 3**: Se a sessão interna do Sankhya expira ("Não autorizado"), o servidor detecta o status 3, invalida o token e tenta novamente com uma nova sessão.
-
-## 🔧 Manutenção
+## 🛠️ Desenvolvimento Local
+Para rodar sem Docker (Node.js direto):
 
 ```bash
-# Acesso SSH
-ssh -i ~/.ssh/LightsailDefaultKey-us-east-1.pem ubuntu@98.92.46.144
-
-# PM2 (Diretório ~/api-precos-sankhya)
-pm2 logs 0                 # Ver logs em tempo real
-pm2 restart 0 --update-env # Reiniciar com novas variáveis de ambiente
+npm install
+npm run dev # (Requer nodemon) ou node index.js
 ```
-
-## 📁 Estrutura
-
-- `index.js`: Lógica principal de rotas e busca de associações HubSpot.
-- `sankhyaAuth.js`: Gerenciamento de tokens e sessões Sankhya.
-- `.env`: Configurado com `SANKHYA_BASE_URL` e `HUBSPOT_ACCESS_TOKEN`.
