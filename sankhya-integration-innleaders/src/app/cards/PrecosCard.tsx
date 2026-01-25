@@ -11,21 +11,33 @@ import {
     Tooltip,
     NumberInput,
     Button,
-    Tag
+    Tag,
+    Table,
+    TableBody,
+    TableRow,
+    TableCell,
+    TableHead,
+    Accordion,
 } from "@hubspot/ui-extensions";
 
-// Define types
-interface PrecosResponse {
-    pv1: number | null;
-    pv2: number | null;
-    pv3: number | null;
+interface ItemData {
+    id: string;
+    name: string;
+    quantity: number;
+    prices: { pv1: number | null; pv2: number | null; pv3: number | null };
+    stock: number;
+    stockContext?: string;
 }
 
-// Stage Mapping
-const STAGE_MAP: Record<string, { label: string; variant: "default" | "success" | "warning" | "error" | "info" }> = {
-    "decisionmakerboughtin": { label: "Aguardando Liberação", variant: "warning" },
-    "presentationscheduled": { label: "Pedido (Aguardando Conferência)", variant: "info" },
-};
+interface PrecosResponse {
+    items: ItemData[];
+    currentAmount: string;
+    currentStage: string;
+    stageLabel?: string;
+}
+
+// ... (STAGE_MAP removed, using backend label)
+
 
 hubspot.extend<'crm.record.tab'>(({ context }) => (
     <PrecosCard
@@ -43,14 +55,10 @@ interface PrecosCardProps {
 }
 
 const PrecosCard = ({ context }: PrecosCardProps) => {
-    const [precos, setPrecos] = useState<PrecosResponse | null>(null);
+    const [data, setData] = useState<PrecosResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [missingData, setMissingData] = useState<any>(null);
-
-    // Stock & Quantity State
-    const [stock, setStock] = useState<number | null>(null);
-    const [neededQty, setNeededQty] = useState<number | null>(null);
 
     // Amount State
     const [amount, setAmount] = useState<number | undefined>(undefined);
@@ -59,70 +67,54 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
     const [saveSuccess, setSaveSuccess] = useState(false);
     const [saveWarning, setSaveWarning] = useState<string | null>(null);
 
-    // Stage State
-    const [dealStage, setDealStage] = useState<string | null>(null);
+    // Conversion State
     const [converting, setConverting] = useState(false);
     const [convertError, setConvertError] = useState<string | null>(null);
     const [convertSuccess, setConvertSuccess] = useState(false);
 
-    // Guard to prevent multiple fetches for the same ID
-    const lastFetchedId = React.useRef<number | null>(null);
+    const fetchPrices = async () => {
+        setLoading(true);
+        setError(null);
+        setMissingData(null);
+
+        try {
+            const response = await hubspot.fetch("https://api.gcrux.com/hubspot/prices/deal", {
+                method: "POST",
+                body: { objectId: context.crm.objectId }
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Erro API: ${response.status} - ${errorText}`);
+            }
+
+            const result = await response.json();
+
+            if (result && result.status === "SUCCESS") {
+                setData(result);
+                if (result.currentAmount) setAmount(Number(result.currentAmount));
+            } else if (result && result.status === "MISSING_DATA") {
+                setMissingData(result.details);
+            } else if (result && result.error) {
+                setError(result.error);
+            } else {
+                setError("Resposta inesperada do servidor.");
+            }
+        } catch (err: any) {
+            console.error("Erro na chamada API:", err);
+            setError(`Não foi possível carregar os preços. (${err.message})`);
+        } finally {
+            setLoading(false);
+        }
+    };
 
     useEffect(() => {
-        const loadPrices = async () => {
-            if (lastFetchedId.current === context.crm.objectId) return;
-
-            setLoading(true);
-            setError(null);
-            setMissingData(null);
-            lastFetchedId.current = context.crm.objectId;
-
-            try {
-                const response = await hubspot.fetch("https://api.gcrux.com/hubspot/prices/deal", {
-                    method: "POST",
-                    body: {
-                        objectId: context.crm.objectId
-                    }
-                });
-
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    throw new Error(`Erro API: ${response.status} - ${errorText}`);
-                }
-
-                const result = await response.json();
-
-                if (result && result.status === "SUCCESS") {
-                    setPrecos(result.prices);
-                    setStock(result.stock);
-                    setNeededQty(result.quantity);
-                    if (result.currentAmount) {
-                        setAmount(Number(result.currentAmount));
-                    }
-                    if (result.currentStage) {
-                        setDealStage(result.currentStage);
-                    }
-                } else if (result && result.status === "MISSING_DATA") {
-                    setMissingData(result.details);
-                } else if (result && result.error) {
-                    setError(result.error);
-                } else {
-                    setError("Resposta inesperada do servidor.");
-                }
-
-            } catch (err: any) {
-                console.error("Erro na chamada API:", err);
-                setError(`Não foi possível carregar os preços. (${err.message})`);
-            } finally {
-                setLoading(false);
-            }
-        };
-
         if (context.crm.objectId) {
-            loadPrices();
+            fetchPrices();
         }
     }, [context.crm.objectId]);
 
+    // ... (handleSaveAmount and handleConvertToOrder logic remains similar, reusing data state)
     const handleSaveAmount = async (valueOverride?: number) => {
         const val = valueOverride !== undefined ? valueOverride : amount;
         if (val === null || val === undefined) return;
@@ -178,7 +170,8 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
             }
 
             setConvertSuccess(true);
-            setDealStage("presentationscheduled");
+            // Refresh data to update status
+            fetchPrices();
             setTimeout(() => setConvertSuccess(false), 5000);
 
         } catch (err: any) {
@@ -190,164 +183,141 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
 
     const formatCurrency = (value: number | null): string => {
         if (value === null || value === undefined) return "---";
-        return new Intl.NumberFormat("pt-BR", {
-            style: "currency",
-            currency: "BRL",
-        }).format(value);
+        return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
     };
 
-    if (loading) {
-        return <LoadingSpinner label="Consultando tabelas Sankhya..." />;
-    }
+    // Calculate Totals
+    const totalItems = data?.items.length || 0;
+    const totals = React.useMemo(() => {
+        if (!data?.items) return { pv1: 0, pv2: 0, pv3: 0 };
+        return data.items.reduce((acc, item) => ({
+            pv1: acc.pv1 + ((item.prices.pv1 || 0) * item.quantity),
+            pv2: acc.pv2 + ((item.prices.pv2 || 0) * item.quantity),
+            pv3: acc.pv3 + ((item.prices.pv3 || 0) * item.quantity),
+        }), { pv1: 0, pv2: 0, pv3: 0 });
+    }, [data]);
+
+    if (loading) return <LoadingSpinner label="Consultando tabelas Sankhya..." />;
 
     if (missingData) {
         return (
             <Alert title="Dados Incompletos" variant="warning">
-                Para visualizar os preços, certifique-se que o negócio tem:
-                <Box>• Produto (Item de Linha)</Box>
-                <Box>• Parceiro (Empresa associada com cód. Sankhya)</Box>
+                Para visualizar os preços, certifique-se que o negócio tem Parceiro e Itens de Linha.
             </Alert>
         );
     }
 
     if (error) {
         return (
-            <Alert title="Erro" variant="error">
-                {error}
-                <Box>
-                    <Text variant="microcopy">Tente atualizar a página.</Text>
-                </Box>
-            </Alert>
+            <Flex direction="column" gap="sm">
+                <Alert title="Erro" variant="error">{error}</Alert>
+                <Button onClick={fetchPrices} variant="secondary">Tentar Novamente</Button>
+            </Flex>
         );
     }
 
-    const stageInfo = dealStage && STAGE_MAP[dealStage];
+    const hasStockIssue = data?.items.some(i => i.stock < i.quantity);
 
     return (
         <Flex direction="column" gap="md">
-
-            {/* ESTEIRA STATUS & ESTOQUE */}
-            <Box>
-                <Flex align="center" gap="md" justify="between">
-                    <Flex align="center" gap="xs">
-                        <Text format={{ fontWeight: "bold" }}>Status:</Text>
-                        {dealStage && (
-                            stageInfo ? (
-                                <Tag variant={stageInfo.variant}>{stageInfo.label}</Tag>
-                            ) : (
-                                <Text>{dealStage}</Text>
-                            )
-                        )}
-                    </Flex>
-
-                    {stock !== null && (
-                        <Flex align="center" gap="xs">
-                            <Text format={{ fontWeight: "bold" }}>Estoque:</Text>
-                            <Tag variant={(stock < (neededQty || 0)) ? "error" : "success"}>
-                                {stock} disponíveis
-                            </Tag>
-                        </Flex>
+            {/* HEADER: Status & Refresh */}
+            <Flex align="center" justify="between">
+                <Flex align="center" gap="sm">
+                    <Text format={{ fontWeight: "bold" }}>Status:</Text>
+                    {data?.stageLabel ? (
+                        <Tag variant={data.currentStage === 'decisionmakerboughtin' ? "warning" : "info"}>
+                            {data.stageLabel}
+                        </Tag>
+                    ) : (
+                        <Text>{data?.currentStage}</Text>
                     )}
                 </Flex>
+                <Button onClick={fetchPrices} variant="tertiary" size="sm">↻ Atualizar</Button>
+            </Flex>
+            <Divider />
 
-                {(stock !== null && neededQty !== null && stock < neededQty) && (
-                    <Box paddingTop="xs">
-                        <Alert title="Possível Corte de Estoque" variant="error">
-                            Atenção: O estoque atual ({stock}) é menor que a quantidade do pedido ({neededQty}). O item poderá ser cortado se faturado agora.
-                        </Alert>
-                    </Box>
-                )}
-                <Divider />
-            </Box>
-
+            {/* GRAND TOTALS SECTION */}
             <Flex direction="row" gap="md" justify="between">
-                {/* PV1 */}
                 <Box>
-                    <Flex align="center" gap="xs">
-                        <Text format={{ fontWeight: "bold" }}>PV1 - Alta</Text>
-                        <Icon name="info" size="sm" />
-                    </Flex>
-                    <Text variant="microcopy">Tabela 1</Text>
-                    <Text format={{ fontWeight: "bold" }}>
-                        {formatCurrency(precos?.pv1 ?? null)}
-                    </Text>
-                    <Flex direction="column" gap="xs">
-                        <Button
-                            variant="secondary"
-                            size="xs"
-                            onClick={() => {
-                                if (precos?.pv1) {
-                                    setAmount(precos.pv1);
-                                    handleSaveAmount(precos.pv1);
-                                }
-                            }}
-                        >
-                            Aplicar
-                        </Button>
-                    </Flex>
+                    <Flex align="center" gap="xs"><Text format={{ fontWeight: "bold" }}>Total PV1</Text><Icon name="info" size="sm" /></Flex>
+                    <Text format={{ fontWeight: "bold", fontSize: "lg" }}>{formatCurrency(totals.pv1)}</Text>
+                    <Button variant="secondary" size="xs" onClick={() => { setAmount(totals.pv1); handleSaveAmount(totals.pv1); }}>Aplicar Total</Button>
                 </Box>
-
-                <Divider />
-
-                {/* PV2 */}
+                <Divider vertical />
                 <Box>
-                    <Flex align="center" gap="xs">
-                        <Text format={{ fontWeight: "bold" }}>PV2 - Média</Text>
-                    </Flex>
-                    <Text variant="microcopy">Tabela 2</Text>
-                    <Text format={{ fontWeight: "bold" }}>
-                        {formatCurrency(precos?.pv2 ?? null)}
-                    </Text>
-                    <Flex direction="column" gap="xs">
-                        <Button
-                            variant="secondary"
-                            size="xs"
-                            onClick={() => {
-                                if (precos?.pv2) {
-                                    setAmount(precos.pv2);
-                                    handleSaveAmount(precos.pv2);
-                                }
-                            }}
-                        >
-                            Aplicar
-                        </Button>
-                    </Flex>
+                    <Flex align="center" gap="xs"><Text format={{ fontWeight: "bold" }}>Total PV2</Text></Flex>
+                    <Text format={{ fontWeight: "bold", fontSize: "lg" }}>{formatCurrency(totals.pv2)}</Text>
+                    <Button variant="secondary" size="xs" onClick={() => { setAmount(totals.pv2); handleSaveAmount(totals.pv2); }}>Aplicar Total</Button>
                 </Box>
-
-                <Divider />
-
-                {/* PV3 */}
+                <Divider vertical />
                 <Box>
-                    <Flex align="center" gap="xs">
-                        <Text format={{ fontWeight: "bold" }}>PV3 - Baixa</Text>
-                    </Flex>
-                    <Text variant="microcopy">Tabela 3</Text>
-                    <Text format={{ fontWeight: "bold" }}>
-                        {formatCurrency(precos?.pv3 ?? null)}
-                    </Text>
-                    <Flex direction="column" gap="xs">
-                        <Button
-                            variant="secondary"
-                            size="xs"
-                            onClick={() => {
-                                if (precos?.pv3) {
-                                    setAmount(precos.pv3);
-                                    handleSaveAmount(precos.pv3);
-                                }
-                            }}
-                        >
-                            Aplicar
-                        </Button>
-                    </Flex>
+                    <Flex align="center" gap="xs"><Text format={{ fontWeight: "bold" }}>Total PV3</Text></Flex>
+                    <Text format={{ fontWeight: "bold", fontSize: "lg" }}>{formatCurrency(totals.pv3)}</Text>
+                    <Button variant="secondary" size="xs" onClick={() => { setAmount(totals.pv3); handleSaveAmount(totals.pv3); }}>Aplicar Total</Button>
                 </Box>
             </Flex>
+
+            <Divider />
+
+            {/* COLLAPSIBLE ITEM LIST */}
+            <Accordion title={`Ver Detalhes dos ${totalItems} Itens`} defaultOpen={false}>
+                <Table>
+                    <TableHead>
+                        <TableRow>
+                            <TableCell>Produto</TableCell>
+                            <TableCell>Estoque (Disp/Nec)</TableCell>
+                            <TableCell>Unitário (PV1/PV2/PV3)</TableCell>
+                        </TableRow>
+                    </TableHead>
+                    <TableBody>
+                        {data?.items.map((item) => (
+                            <TableRow key={item.id}>
+                                <TableCell>
+                                    <Flex direction="column" gap="xs">
+                                        <Text format={{ fontWeight: "bold" }}>{item.name}</Text>
+                                        {item.stockContext && (
+                                            <Text variant="microcopy">Contexto: {item.stockContext}</Text>
+                                        )}
+                                        <Text variant="microcopy">Qtd: {item.quantity}</Text>
+                                    </Flex>
+                                </TableCell>
+                                <TableCell>
+                                    <Flex direction="column" gap="xs">
+                                        <Tag variant={item.stock < item.quantity ? "error" : "success"}>
+                                            {item.stock} / {item.quantity}
+                                        </Tag>
+                                    </Flex>
+                                </TableCell>
+                                <TableCell>
+                                    <Flex direction="column" gap="xs">
+                                        <Button variant="secondary" size="xs" onClick={() => { if (item.prices.pv1) { setAmount(item.prices.pv1); handleSaveAmount(item.prices.pv1); } }}>
+                                            PV1: {formatCurrency(item.prices.pv1)}
+                                        </Button>
+                                        <Button variant="secondary" size="xs" onClick={() => { if (item.prices.pv2) { setAmount(item.prices.pv2); handleSaveAmount(item.prices.pv2); } }}>
+                                            PV2: {formatCurrency(item.prices.pv2)}
+                                        </Button>
+                                        <Button variant="secondary" size="xs" onClick={() => { if (item.prices.pv3) { setAmount(item.prices.pv3); handleSaveAmount(item.prices.pv3); } }}>
+                                            PV3: {formatCurrency(item.prices.pv3)}
+                                        </Button>
+                                    </Flex>
+                                </TableCell>
+                            </TableRow>
+                        ))}
+                    </TableBody>
+                </Table>
+            </Accordion>
+
+            {hasStockIssue && (
+                <Alert title="Corte de Estoque" variant="error">
+                    Há itens com estoque insuficiente para atender a quantidade solicitada.
+                </Alert>
+            )}
 
             <Divider />
 
             {/* AMOUNT INPUT SECTION */}
             <Flex direction="column" gap="sm">
                 <Text format={{ fontWeight: "bold" }}>Valor do Negócio (Amount)</Text>
-
                 <Flex gap="sm" align="end">
                     <Box flex={1}>
                         <NumberInput
@@ -356,51 +326,27 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
                             value={amount}
                             min={0}
                             onChange={(value) => setAmount(value)}
-                            onBlur={() => {
-                                handleSaveAmount();
-                            }}
+                            onBlur={() => handleSaveAmount()}
                             error={!!saveError || !!saveWarning}
                             validationMessage={saveError ?? (saveWarning ?? undefined)}
                         />
                     </Box>
-                    {saving && (
-                        <Box>
-                            <LoadingSpinner size="sm" label="Salvando..." layout="centered" />
-                        </Box>
-                    )}
-                    {saveSuccess && (
-                        <Box>
-                            <Text variant="microcopy">✓ Salvo com sucesso!</Text>
-                        </Box>
-                    )}
+                    {saving && <LoadingSpinner size="sm" />}
+                    {saveSuccess && <Text variant="microcopy">✓ Salvo!</Text>}
                 </Flex>
-                {saveWarning && (
-                    <Alert title="Atenção" variant="warning">
-                        {saveWarning}
-                    </Alert>
-                )}
-                <Text variant="microcopy">O valor é salvo automaticamente ao clicar em Aplicar ou sair do campo.</Text>
+                {saveWarning && <Alert title="Atenção" variant="warning">{saveWarning}</Alert>}
             </Flex>
 
             <Divider />
 
             {/* ERROR HANDLING FOR CONVERSION */}
-            {convertError && (
-                <Alert title="Erro ao Faturar" variant="error">
-                    {convertError}
-                </Alert>
-            )}
-            {convertSuccess && (
-                <Alert title="Sucesso" variant="success">
-                    Pedido gerado com sucesso!
-                </Alert>
-            )}
+            {convertError && <Alert title="Erro" variant="error">{convertError}</Alert>}
+            {convertSuccess && <Alert title="Sucesso" variant="success">Pedido gerado!</Alert>}
 
-            {/* CONVERSION TRIGGER BUTTON */}
             <Button
                 variant="primary"
                 onClick={handleConvertToOrder}
-                disabled={converting || (dealStage === "decisionmakerboughtin")}
+                disabled={converting || hasStockIssue || (data?.currentStage === "decisionmakerboughtin")}
             >
                 {converting ? "Gerando Pedido..." : "Faturar (Gerar Pedido)"}
             </Button>

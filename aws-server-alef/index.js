@@ -8,6 +8,16 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
+// Mapeamento de Status do HubSpot (Internal ID -> Label Amigável)
+const DEAL_STAGE_MAP = {
+  "appointmentscheduled": "Agendado / Negociação",
+  "decisionmakerboughtin": "Aguardando Liberação",
+  "contractsent": "Aguardando Assinatura",
+  "closedwon": "Fechado Ganho",
+  "closedlost": "Perdido",
+  "presentationscheduled": "Pedido Gerado"
+};
+
 // CONFIGURAÇÕES DE ESTÁGIOS (HUBSPOT INTERNAL IDS)
 const STAGE_AGUARDANDO_LIBERACAO = "decisionmakerboughtin"; // Tomador de decisão envolvido
 const STAGE_PEDIDO = "presentationscheduled"; // Pagamento (Gatilho B2B)
@@ -33,27 +43,49 @@ function toInt(name, value) {
   return n;
 }
 
+async function getEmpresaNome(codEmp) {
+  try {
+    const sql = `SELECT RAZAOSOCIAL FROM TSIEMP WHERE CODEMP = ${codEmp}`;
+    const response = await postGatewayWithRetry({ requestBody: { sql } });
+    const rb = response.data?.responseBody;
+    if (Array.isArray(rb?.rows) && rb.rows.length > 0) {
+      return String(rb.rows[0][0]);
+    }
+    return `Empresa ${codEmp}`;
+  } catch (e) { return `Empresa ${codEmp}`; }
+}
+
 /**
  * Discovery Chain: Resolve Vendedor, Parceiro, Produto e Quote
  */
 async function getDealSankhyaContext(objectId, token) {
-  const hsUrl = `https://api.hubapi.com/crm/v3/objects/deals/${objectId}?state=true&associations=companies,contacts,quotes,line_items&properties=codemp_sankhya,sankhya_codemp,amount,codigo_vendedor_sankhya,hubspot_owner_id,ordem_de_compra_anexo,dealstage`;
+  const hsUrl = `https://api.hubspot.com/crm/v3/objects/deals/${objectId}?state=true&associations=companies,contacts,quotes,line_items&properties=codemp_sankhya,sankhya_codemp,amount,codigo_vendedor_sankhya,hubspot_owner_id,ordem_de_compra_anexo,dealstage`;
   const hsResponse = await axios.get(hsUrl, { headers: { Authorization: `Bearer ${token}` } });
   const deal = hsResponse.data;
   const props = deal.properties;
 
   // 1. Empresa (CodEmp)
   const codEmpRaw = props.codemp_sankhya || props.sankhya_codemp;
+  const codEmp = toInt("codEmp", codEmpRaw);
 
   // 2. Vendedor (CodVend) - Fallback Prop p/ Owner
-  let codVendedor = props.codigo_vendedor_sankhya || props.hubspot_owner_id;
+  // MAPA DE VENDEDORES (HubSpot ID -> Sankhya ID)
+  // Preencha aqui os IDs. Exemplo: "1024509": 15
+  const OWNER_TO_SANKHYA_MAP = {
+    "hubspot_owner_id_aqui": 0
+  };
+
+  let codVendedor = props.codigo_vendedor_sankhya;
+  if (!codVendedor && props.hubspot_owner_id) {
+    codVendedor = OWNER_TO_SANKHYA_MAP[props.hubspot_owner_id] || props.hubspot_owner_id;
+  }
 
   // 3. Parceiro (CodParc) - Company > Contact
   let codParcRaw = null;
   const companyId = deal.associations?.companies?.results?.[0]?.id;
   if (companyId) {
     try {
-      const resp = await axios.get(`https://api.hubapi.com/crm/v3/objects/companies/${companyId}?properties=sankhya_codparc,codparc`, { headers: { Authorization: `Bearer ${token}` } });
+      const resp = await axios.get(`https://api.hubspot.com/crm/v3/objects/companies/${companyId}?properties=sankhya_codparc,codparc`, { headers: { Authorization: `Bearer ${token}` } });
       codParcRaw = resp.data.properties.sankhya_codparc || resp.data.properties.codparc;
     } catch (e) { }
   }
@@ -61,26 +93,43 @@ async function getDealSankhyaContext(objectId, token) {
     const contactId = deal.associations?.contacts?.results?.[0]?.id;
     if (contactId) {
       try {
-        const resp = await axios.get(`https://api.hubapi.com/crm/v3/objects/contacts/${contactId}?properties=sankhya_codparc,codparc`, { headers: { Authorization: `Bearer ${token}` } });
+        const resp = await axios.get(`https://api.hubspot.com/crm/v3/objects/contacts/${contactId}?properties=sankhya_codparc,codparc`, { headers: { Authorization: `Bearer ${token}` } });
         codParcRaw = resp.data.properties.sankhya_codparc || resp.data.properties.codparc;
       } catch (e) { }
     }
   }
 
-  // 4. Produto e Qtd
-  let codProdRaw = null, quantity = 0;
-  const lineItem = deal.associations?.line_items?.results?.[0] || deal.associations?.["line items"]?.results?.[0];
-  if (lineItem) {
-    try {
-      const resp = await axios.get(`https://api.hubapi.com/crm/v3/objects/line_items/${lineItem.id}?properties=sankhya_codprod,codprod,hs_product_id,quantity`, { headers: { Authorization: `Bearer ${token}` } });
-      const lp = resp.data.properties;
-      codProdRaw = lp.sankhya_codprod || lp.codprod;
-      quantity = Number(lp.quantity || 0);
-      if (!codProdRaw && lp.hs_product_id) {
-        const pResp = await axios.get(`https://api.hubapi.com/crm/v3/objects/products/${lp.hs_product_id}?properties=sankhya_codprod,codprod`, { headers: { Authorization: `Bearer ${token}` } });
-        codProdRaw = pResp.data.properties.sankhya_codprod || pResp.data.properties.codprod;
-      }
-    } catch (e) { }
+  // 4. Multi-Item Discovery
+  const items = [];
+  // Fallback para 'line items' (com espaço) que as vezes o HubSpot retorna
+  const rawLineItems = deal.associations?.line_items?.results || deal.associations?.["line items"]?.results || [];
+  const lineItemIds = rawLineItems.map(r => r.id);
+
+  console.log(`[DEBUG] Associations Keys: ${deal.associations ? Object.keys(deal.associations).join(',') : 'None'}`);
+
+  if (lineItemIds.length > 0) {
+    // Fetch details in batches or parallel
+    await Promise.all(lineItemIds.map(async (id) => {
+      try {
+        const resp = await axios.get(`https://api.hubspot.com/crm/v3/objects/line_items/${id}?properties=sankhya_codprod,codprod,hs_product_id,quantity,name`, { headers: { Authorization: `Bearer ${token}` } });
+        const lp = resp.data.properties;
+        let codProd = lp.sankhya_codprod || lp.codprod;
+
+        if (!codProd && lp.hs_product_id) {
+          const pResp = await axios.get(`https://api.hubspot.com/crm/v3/objects/products/${lp.hs_product_id}?properties=sankhya_codprod,codprod`, { headers: { Authorization: `Bearer ${token}` } });
+          codProd = pResp.data.properties.sankhya_codprod || pResp.data.properties.codprod;
+        }
+
+        if (codProd) {
+          items.push({
+            id,
+            name: lp.name || `Item ${id}`,
+            codProd: toInt("codProd", codProd),
+            quantity: Number(lp.quantity || 0)
+          });
+        }
+      } catch (e) { console.warn(`Erro ao buscar item ${id}:`, e.message); }
+    }));
   }
 
   // 5. Quote Discovery (Lógica: Última modificada, não expirada)
@@ -88,7 +137,7 @@ async function getDealSankhyaContext(objectId, token) {
   const quotes = deal.associations?.quotes?.results || [];
   if (quotes.length > 0) {
     try {
-      const detailPromises = quotes.map(q => axios.get(`https://api.hubapi.com/crm/v3/objects/quotes/${q.id}?properties=hs_title,hs_status,hs_expiration_date,hs_lastmodifieddate`, { headers: { Authorization: `Bearer ${token}` } }));
+      const detailPromises = quotes.map(q => axios.get(`https://api.hubspot.com/crm/v3/objects/quotes/${q.id}?properties=hs_title,hs_status,hs_expiration_date,hs_lastmodifieddate`, { headers: { Authorization: `Bearer ${token}` } }));
       const details = (await Promise.all(detailPromises)).map(r => r.data);
       const now = new Date();
       activeQuote = details
@@ -100,15 +149,14 @@ async function getDealSankhyaContext(objectId, token) {
     }
   }
 
-  console.log(`[DISCOVERY] Raw Data: Deal=${objectId}, Parc=${codParcRaw}, Quote=${activeQuote?.id || 'Nenhuma'}`);
+  console.log(`[DISCOVERY] Raw Data: Deal=${objectId}, Emp=${codEmp}, Parc=${codParcRaw}, Items=${items.length}, Quote=${activeQuote?.id || 'Nenhuma'}`);
 
   return {
     deal,
     props,
-    codEmp: toInt("codEmp", codEmpRaw),
+    codEmp,
     codParc: toInt("codParc", codParcRaw),
-    codProd: toInt("codProd", codProdRaw),
-    quantity,
+    items, // Array of { name, codProd, quantity }
     activeQuote,
     codVendedor
   };
@@ -154,43 +202,68 @@ async function consultaPreco(codProd, codParc, codEmp, seqPv) {
 
 async function consultaEstoque(codProd, codEmp) {
   try {
-    const sql = `SELECT ISNULL(SUM(ESTOQUE - RESERVADO), 0) AS DISPONIVEL FROM TGFEST WHERE CODPROD = ${codProd} AND CODEMP = ${codEmp}`;
+    const sql = `SELECT SUM(ESTOQUE - RESERVADO) AS DISPONIVEL FROM TGFEST WHERE CODPROD = ${codProd} AND CODEMP = ${codEmp}`;
+    console.log(`[STK] SQL: ${sql}`);
     const response = await postGatewayWithRetry({ requestBody: { sql } });
-    const estoque = parseDbExplorerFirstValue(response.data);
-    return estoque !== null ? estoque : 0;
+
+    // Debug da resposta crua
+    const rb = response.data?.responseBody;
+    console.log(`[STK] Raw Response: ${JSON.stringify(rb)}`);
+
+    if (Array.isArray(rb?.rows) && rb.rows.length > 0) {
+      const row = rb.rows[0];
+      // DbExplorer retorna array de valores. Se for SELECT SUM... o valor está no índice 0
+      const val = Array.isArray(row) ? row[0] : row;
+      return val != null ? Number(val) : 0;
+    }
+
+    return 0;
   } catch (err) {
+    console.error(`[STK] Erro: ${err.message}`);
     return 0;
   }
 }
 
 app.post("/hubspot/prices/deal", async (req, res) => {
-  console.log("--- Chamada /prices/deal ---");
+  console.log("--- Chamada /prices/deal (Multi-Item) ---");
   try {
     const { objectId } = req.body;
     const ctx = await getDealSankhyaContext(objectId, process.env.HUBSPOT_ACCESS_TOKEN);
 
-    if (!ctx.codProd || !ctx.codParc || !ctx.codEmp) {
-      return res.json({ status: "MISSING_DATA", message: "Dados incompletos.", details: ctx });
+    if (!ctx.codParc || !ctx.codEmp || ctx.items.length === 0) {
+      return res.json({ status: "MISSING_DATA", message: "Dados incompletos (Parceiro, Empresa ou Itens).", details: ctx });
     }
 
-    const [pv1, pv2, pv3, estoque] = await Promise.all([
-      consultaPreco(ctx.codProd, ctx.codParc, ctx.codEmp, 1),
-      consultaPreco(ctx.codProd, ctx.codParc, ctx.codEmp, 2),
-      consultaPreco(ctx.codProd, ctx.codParc, ctx.codEmp, 3),
-      consultaEstoque(ctx.codProd, ctx.codEmp),
-    ]);
+    // Contexto da Empresa
+    const empresaNome = await getEmpresaNome(ctx.codEmp);
 
-    if (estoque < ctx.quantity) {
-      console.warn(`[CORTE] Deal ${objectId}: Faltam ${ctx.quantity - estoque} un.`);
-    }
+    // Processar cada item
+    const processedItems = await Promise.all(ctx.items.map(async (item) => {
+      const [pv1, pv2, pv3, estoque] = await Promise.all([
+        consultaPreco(item.codProd, ctx.codParc, ctx.codEmp, 1),
+        consultaPreco(item.codProd, ctx.codParc, ctx.codEmp, 2),
+        consultaPreco(item.codProd, ctx.codParc, ctx.codEmp, 3),
+        consultaEstoque(item.codProd, ctx.codEmp),
+      ]);
+
+      return {
+        ...item,
+        prices: { pv1, pv2, pv3 },
+        stock: estoque,
+        stockContext: empresaNome // "RAZAO SOCIAL"
+      };
+    }));
+
+    // Verificar corte global (se algum item não tem estoque)
+    const hasStockCut = processedItems.some(i => i.stock < i.quantity);
+    if (hasStockCut) console.warn(`[CORTE] Deal ${objectId} tem itens com falta de estoque.`);
 
     return res.json({
       status: "SUCCESS",
-      prices: { pv1, pv2, pv3 },
-      stock: estoque,
-      quantity: ctx.quantity,
+      items: processedItems,
       currentAmount: ctx.props.amount,
       currentStage: ctx.props.dealstage,
+      stageLabel: DEAL_STAGE_MAP[ctx.props.dealstage] || ctx.props.dealstage, // Status Amigável
       quote: ctx.activeQuote ? { id: ctx.activeQuote.id, title: ctx.activeQuote.properties.hs_title } : null
     });
   } catch (err) {
@@ -234,6 +307,18 @@ app.post("/hubspot/convert-to-order", async (req, res) => {
     }
     await axios.patch(`https://api.hubapi.com/crm/v3/objects/deals/${objectId}`, { properties: { dealstage: STAGE_PEDIDO } }, { headers: { Authorization: `Bearer ${token}` } });
     res.json({ status: "SUCCESS" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- DEBUG REMOVER DEPOIS ---
+app.post("/debug/sql", async (req, res) => {
+  try {
+    const { sql } = req.body;
+    console.log(`[DEBUG] Executing SQL: ${sql}`);
+    const response = await postGatewayWithRetry({ requestBody: { sql } });
+    res.json(response.data);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
