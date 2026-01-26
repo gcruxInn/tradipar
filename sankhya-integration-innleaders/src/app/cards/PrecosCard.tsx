@@ -7,7 +7,6 @@ import {
     hubspot,
     Box,
     Divider,
-    Icon,
     Tooltip,
     NumberInput,
     Button,
@@ -18,6 +17,9 @@ import {
     TableCell,
     TableHead,
     Accordion,
+    Select,
+    Modal,
+    ModalBody,
 } from "@hubspot/ui-extensions";
 
 interface ItemData {
@@ -27,6 +29,7 @@ interface ItemData {
     prices: { pv1: number | null; pv2: number | null; pv3: number | null };
     stock: number;
     stockContext?: string;
+    currentPrice?: number | null;
 }
 
 interface PrecosResponse {
@@ -71,6 +74,14 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
     const [converting, setConverting] = useState(false);
     const [convertError, setConvertError] = useState<string | null>(null);
     const [convertSuccess, setConvertSuccess] = useState(false);
+
+    // Custom Price State (for individual item price override)
+    const [customPriceItemId, setCustomPriceItemId] = useState<string | null>(null);
+    const [customPriceValue, setCustomPriceValue] = useState<number | undefined>(undefined);
+    const [customUnitPriceValue, setCustomUnitPriceValue] = useState<number | undefined>(undefined);
+
+    // Selected prices per item (item.id -> selected unit price)
+    const [selectedPrices, setSelectedPrices] = useState<Record<string, number>>({});
 
     const fetchPrices = async () => {
         setLoading(true);
@@ -186,6 +197,167 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
         return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
     };
 
+    const handleQuantityChange = (itemId: string, newQty: number | undefined) => {
+        if (!data || newQty === undefined || newQty < 0) return;
+
+        const updatedItems = data.items.map(item =>
+            item.id === itemId ? { ...item, quantity: newQty } : item
+        );
+
+        setData({ ...data, items: updatedItems });
+    };
+
+    const handleSaveQuantity = async (itemId: string, newQty: number) => {
+        try {
+            const response = await hubspot.fetch("https://api.gcrux.com/hubspot/update/line-item", {
+                method: "POST",
+                body: { lineItemId: itemId, quantity: newQty }
+            });
+            if (!response.ok) console.error("Failed to save line item quantity");
+        } catch (err) {
+            console.error(err);
+        }
+    };
+
+    const handlePVSelect = (item: ItemData, pvKey: string) => {
+        if (pvKey === "custom") {
+            setCustomPriceItemId(item.id);
+            setCustomPriceValue(undefined);
+            return;
+        }
+        // PV selection no longer auto-updates Valor Total
+        // User must use the custom price input or the top totals buttons
+    };
+
+    const handleApplyItemPrice = async (itemId: string, unitPrice: number) => {
+        if (!data) return;
+
+        const item = data.items.find(i => i.id === itemId);
+        if (!item) return;
+
+        const total = unitPrice * item.quantity;
+
+        // Update local state
+        setSelectedPrices(prev => ({ ...prev, [itemId]: total }));
+
+        // Save price to HubSpot line item
+        try {
+            const response = await hubspot.fetch("https://api.gcrux.com/hubspot/update/line-item", {
+                method: "POST",
+                body: { lineItemId: itemId, price: unitPrice }
+            });
+
+            if (response.ok) {
+                setSaveSuccess(true);
+                setTimeout(() => setSaveSuccess(false), 3000);
+            } else {
+                console.error("Failed to save item price");
+            }
+        } catch (err) {
+            console.error("Failed to save item price:", err);
+        }
+
+        setCustomPriceItemId(null);
+        setCustomPriceValue(undefined);
+    };
+
+    // Apply a TOTAL value directly (for custom input where user enters total, not unit price)
+    const handleApplyItemTotal = async (itemId: string, totalValue: number) => {
+        if (!data) return;
+
+        const item = data.items.find(i => i.id === itemId);
+        if (!item || item.quantity === 0) return;
+
+        const unitPrice = totalValue / item.quantity;
+
+        // Update local state with the total directly
+        setSelectedPrices(prev => ({ ...prev, [itemId]: totalValue }));
+
+        // Save unit price to HubSpot line item
+        try {
+            const response = await hubspot.fetch("https://api.gcrux.com/hubspot/update/line-item", {
+                method: "POST",
+                body: { lineItemId: itemId, price: unitPrice }
+            });
+
+            if (response.ok) {
+                setSaveSuccess(true);
+                setTimeout(() => setSaveSuccess(false), 3000);
+            } else {
+                console.error("Failed to save item price");
+            }
+        } catch (err) {
+            console.error("Failed to save item price:", err);
+        }
+
+        setCustomPriceItemId(null);
+        setCustomPriceValue(undefined);
+    };
+
+    const handleApplyCustomPrice = () => {
+        if (customPriceItemId && customPriceValue !== undefined && customPriceValue >= 0) {
+            // Custom value is entered as TOTAL, not unit price
+            handleApplyItemTotal(customPriceItemId, customPriceValue);
+        }
+        setCustomPriceItemId(null);
+        setCustomPriceValue(undefined);
+        setCustomUnitPriceValue(undefined);
+    };
+
+    const handleApplyCustomUnitPrice = () => {
+        if (customPriceItemId && customUnitPriceValue !== undefined && customUnitPriceValue >= 0) {
+            // Custom value is entered as UNIT price, will be multiplied by qty
+            handleApplyItemPrice(customPriceItemId, customUnitPriceValue);
+        }
+        setCustomPriceItemId(null);
+        setCustomPriceValue(undefined);
+        setCustomUnitPriceValue(undefined);
+    };
+
+    const handleCancelCustomPrice = () => {
+        setCustomPriceItemId(null);
+        setCustomPriceValue(undefined);
+        setCustomUnitPriceValue(undefined);
+    };
+
+    // Calculate selected total from selectedPrices
+    const calculateSelectedTotal = (): number => {
+        return Object.values(selectedPrices).reduce((sum, price) => sum + price, 0);
+    };
+
+    // Apply a specific PV to ALL items at once
+    const handleApplyAllItemsPV = async (pvKey: "pv1" | "pv2" | "pv3") => {
+        if (!data?.items) return;
+
+        let totalAmount = 0;
+        const newSelectedPrices: Record<string, number> = {};
+
+        // Update each item
+        for (const item of data.items) {
+            const unitPrice = item.prices[pvKey] || 0;
+            const itemTotal = unitPrice * item.quantity;
+            totalAmount += itemTotal;
+            newSelectedPrices[item.id] = itemTotal;
+
+            // Save price to HubSpot line item (fire and forget for performance)
+            hubspot.fetch("https://api.gcrux.com/hubspot/update/line-item", {
+                method: "POST",
+                body: { lineItemId: item.id, price: unitPrice }
+            }).catch(err => console.error("Failed to save item price:", err));
+        }
+
+        // Update local state with all selected prices
+        setSelectedPrices(newSelectedPrices);
+
+        // Update and save the total amount
+        setAmount(totalAmount);
+        handleSaveAmount(totalAmount);
+
+        // Show success
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 3000);
+    };
+
     // Calculate Totals
     const totalItems = data?.items.length || 0;
     const totals = React.useMemo(() => {
@@ -196,6 +368,17 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
             pv3: acc.pv3 + ((item.prices.pv3 || 0) * item.quantity),
         }), { pv1: 0, pv2: 0, pv3: 0 });
     }, [data]);
+
+    // Helper to determine which PV matches the current price
+    const getSelectedPV = (item: ItemData): string | undefined => {
+        if (!item.currentPrice) return undefined;
+        const cp = item.currentPrice;
+        // Compare with a small tolerance for floating point
+        if (item.prices.pv1 && Math.abs(cp - item.prices.pv1) < 0.01) return "pv1";
+        if (item.prices.pv2 && Math.abs(cp - item.prices.pv2) < 0.01) return "pv2";
+        if (item.prices.pv3 && Math.abs(cp - item.prices.pv3) < 0.01) return "pv3";
+        return undefined;
+    };
 
     if (loading) return <LoadingSpinner label="Consultando tabelas Sankhya..." />;
 
@@ -232,30 +415,45 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
                         <Text>{data?.currentStage}</Text>
                     )}
                 </Flex>
-                <Button onClick={fetchPrices} variant="tertiary" size="sm">↻ Atualizar</Button>
+                <Button onClick={fetchPrices} variant="secondary" size="sm">↻ Atualizar</Button>
             </Flex>
             <Divider />
 
-            {/* GRAND TOTALS SECTION */}
-            <Flex direction="row" gap="md" justify="between">
-                <Box>
-                    <Flex align="center" gap="xs"><Text format={{ fontWeight: "bold" }}>Total PV1</Text><Icon name="info" size="sm" /></Flex>
-                    <Text format={{ fontWeight: "bold", fontSize: "lg" }}>{formatCurrency(totals.pv1)}</Text>
-                    <Button variant="secondary" size="xs" onClick={() => { setAmount(totals.pv1); handleSaveAmount(totals.pv1); }}>Aplicar Total</Button>
-                </Box>
-                <Divider vertical />
-                <Box>
-                    <Flex align="center" gap="xs"><Text format={{ fontWeight: "bold" }}>Total PV2</Text></Flex>
-                    <Text format={{ fontWeight: "bold", fontSize: "lg" }}>{formatCurrency(totals.pv2)}</Text>
-                    <Button variant="secondary" size="xs" onClick={() => { setAmount(totals.pv2); handleSaveAmount(totals.pv2); }}>Aplicar Total</Button>
-                </Box>
-                <Divider vertical />
-                <Box>
-                    <Flex align="center" gap="xs"><Text format={{ fontWeight: "bold" }}>Total PV3</Text></Flex>
-                    <Text format={{ fontWeight: "bold", fontSize: "lg" }}>{formatCurrency(totals.pv3)}</Text>
-                    <Button variant="secondary" size="xs" onClick={() => { setAmount(totals.pv3); handleSaveAmount(totals.pv3); }}>Aplicar Total</Button>
+            {/* GRAND TOTALS & AMOUNT ROW */}
+            <Flex direction="row" gap="sm" justify="between" align="center">
+                <Button variant="transparent" size="sm" onClick={() => handleApplyAllItemsPV("pv1")}>
+                    <Text format={{ fontWeight: "bold" }} inline={true}>Total PV1</Text>
+                    <Text inline={true}> {formatCurrency(totals.pv1)} </Text>
+                </Button>
+                <Text>|</Text>
+                <Button variant="transparent" size="sm" onClick={() => handleApplyAllItemsPV("pv2")}>
+                    <Text format={{ fontWeight: "bold" }} inline={true}>Total PV2</Text>
+                    <Text inline={true}> {formatCurrency(totals.pv2)} </Text>
+                </Button>
+                <Text>|</Text>
+                <Button variant="transparent" size="sm" onClick={() => handleApplyAllItemsPV("pv3")}>
+                    <Text format={{ fontWeight: "bold" }} inline={true}>Total PV3</Text>
+                    <Text inline={true}> {formatCurrency(totals.pv3)} </Text>
+                </Button>
+                <Text>|</Text>
+                <Box flex="none">
+                    <Flex direction="row" gap="xs" align="end">
+                        <NumberInput
+                            name="amount"
+                            label="Valor Total"
+                            value={amount}
+                            min={0}
+                            onChange={(value) => setAmount(value)}
+                            onBlur={() => handleSaveAmount()}
+                            error={!!saveError}
+                            validationMessage={saveError ?? undefined}
+                        />
+                        {saving && <LoadingSpinner label="Salvando..." size="sm" />}
+                        {saveSuccess && <Text variant="microcopy" inline={true}>✓ Salvo!</Text>}
+                    </Flex>
                 </Box>
             </Flex>
+            {saveWarning && <Alert title="Atenção" variant="warning">{saveWarning}</Alert>}
 
             <Divider />
 
@@ -264,47 +462,153 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
                 <Table>
                     <TableHead>
                         <TableRow>
+                            <TableCell width={120}>Qtd</TableCell>
                             <TableCell>Produto</TableCell>
-                            <TableCell>Estoque (Disp/Nec)</TableCell>
-                            <TableCell>Unitário (PV1/PV2/PV3)</TableCell>
+                            <TableCell>Estoque</TableCell>
+                            <TableCell>Aplicar Preço</TableCell>
                         </TableRow>
                     </TableHead>
                     <TableBody>
                         {data?.items.map((item) => (
                             <TableRow key={item.id}>
+                                <TableCell width={120}>
+                                    <NumberInput
+                                        label=""
+                                        name={`qty-${item.id}`}
+                                        value={item.quantity}
+                                        min={0}
+                                        onChange={(val) => handleQuantityChange(item.id, val)}
+                                        onBlur={() => handleSaveQuantity(item.id, item.quantity)}
+                                    />
+                                </TableCell>
                                 <TableCell>
                                     <Flex direction="column" gap="xs">
                                         <Text format={{ fontWeight: "bold" }}>{item.name}</Text>
                                         {item.stockContext && (
-                                            <Text variant="microcopy">Contexto: {item.stockContext}</Text>
+                                            <Text variant="microcopy">{item.stockContext}</Text>
                                         )}
-                                        <Text variant="microcopy">Qtd: {item.quantity}</Text>
                                     </Flex>
                                 </TableCell>
                                 <TableCell>
-                                    <Flex direction="column" gap="xs">
-                                        <Tag variant={item.stock < item.quantity ? "error" : "success"}>
-                                            {item.stock} / {item.quantity}
-                                        </Tag>
-                                    </Flex>
+                                    <Tag variant={item.stock < item.quantity ? "error" : "success"}>
+                                        {item.stock} / {item.quantity}
+                                    </Tag>
                                 </TableCell>
                                 <TableCell>
                                     <Flex direction="column" gap="xs">
-                                        <Button variant="secondary" size="xs" onClick={() => { if (item.prices.pv1) { setAmount(item.prices.pv1); handleSaveAmount(item.prices.pv1); } }}>
-                                            PV1: {formatCurrency(item.prices.pv1)}
+                                        <Select
+                                            label=""
+                                            name={`pv-${item.id}`}
+                                            value={getSelectedPV(item)}
+                                            options={[
+                                                { label: `PV1 ${formatCurrency((item.prices.pv1 || 0) * item.quantity)}`, value: "pv1" },
+                                                { label: `PV2 ${formatCurrency((item.prices.pv2 || 0) * item.quantity)}`, value: "pv2" },
+                                                { label: `PV3 ${formatCurrency((item.prices.pv3 || 0) * item.quantity)}`, value: "pv3" },
+                                            ]}
+                                            onChange={(val) => {
+                                                const prices = item.prices;
+                                                let unitPrice = 0;
+                                                if (val === "pv1") unitPrice = prices.pv1 || 0;
+                                                else if (val === "pv2") unitPrice = prices.pv2 || 0;
+                                                else if (val === "pv3") unitPrice = prices.pv3 || 0;
+                                                handleApplyItemPrice(item.id, unitPrice);
+                                            }}
+                                        />
+                                        <Button
+                                            variant="secondary"
+                                            size="xs"
+                                            overlay={
+                                                <Modal title={`Preço: ${item.name}`} id={`modal-${item.id}`}>
+                                                    <ModalBody>
+                                                        <Flex direction="column" gap="md">
+                                                            {saveSuccess && (
+                                                                <Alert title="Sucesso!" variant="success">
+                                                                    Preço aplicado! Feche esta janela e confira os valores.
+                                                                </Alert>
+                                                            )}
+                                                            <Text variant="microcopy">Quantidade: {item.quantity} itens</Text>
+                                                            <Flex direction="row" gap="md" justify="between">
+                                                                <Flex direction="column" gap="xs" align="center">
+                                                                    <Text format={{ fontWeight: "bold" }}>PV1 x {item.quantity}</Text>
+                                                                    <Text variant="microcopy">Unit: {formatCurrency(item.prices.pv1)}</Text>
+                                                                    <Text>{formatCurrency((item.prices.pv1 || 0) * item.quantity)}</Text>
+                                                                    <Button variant="secondary" size="xs" onClick={() => handleApplyItemPrice(item.id, item.prices.pv1 || 0)}>Aplicar Total</Button>
+                                                                </Flex>
+                                                                <Flex direction="column" gap="xs" align="center">
+                                                                    <Text format={{ fontWeight: "bold" }}>PV2 x {item.quantity}</Text>
+                                                                    <Text variant="microcopy">Unit: {formatCurrency(item.prices.pv2)}</Text>
+                                                                    <Text>{formatCurrency((item.prices.pv2 || 0) * item.quantity)}</Text>
+                                                                    <Button variant="secondary" size="xs" onClick={() => handleApplyItemPrice(item.id, item.prices.pv2 || 0)}>Aplicar Total</Button>
+                                                                </Flex>
+                                                                <Flex direction="column" gap="xs" align="center">
+                                                                    <Text format={{ fontWeight: "bold" }}>PV3 x {item.quantity}</Text>
+                                                                    <Text variant="microcopy">Unit: {formatCurrency(item.prices.pv3)}</Text>
+                                                                    <Text>{formatCurrency((item.prices.pv3 || 0) * item.quantity)}</Text>
+                                                                    <Button variant="secondary" size="xs" onClick={() => handleApplyItemPrice(item.id, item.prices.pv3 || 0)}>Aplicar Total</Button>
+                                                                </Flex>
+                                                            </Flex>
+                                                            <Divider />
+                                                            <Flex direction="row" gap="lg" justify="between">
+                                                                <Flex direction="column" gap="xs">
+                                                                    <Text format={{ fontWeight: "bold" }}>Valor Total Personalizado:</Text>
+                                                                    <Text variant="microcopy">Digite o valor TOTAL. Será dividido por {item.quantity} para calcular o unitário.</Text>
+                                                                    <NumberInput
+                                                                        label=""
+                                                                        name={`custom-total-${item.id}`}
+                                                                        value={customPriceValue}
+                                                                        min={0}
+                                                                        placeholder={`Ex: ${formatCurrency((item.prices.pv1 || 0) * item.quantity)}`}
+                                                                        onChange={(val) => setCustomPriceValue(val)}
+                                                                    />
+                                                                    <Button variant="primary" size="sm" onClick={handleApplyCustomPrice}>Aplicar Total</Button>
+                                                                </Flex>
+                                                                <Flex direction="column" gap="xs">
+                                                                    <Text format={{ fontWeight: "bold" }}>Valor Unitário Personalizado:</Text>
+                                                                    <Text variant="microcopy">Digite o preço por UNIDADE. Será multiplicado por {item.quantity}.</Text>
+                                                                    <NumberInput
+                                                                        label=""
+                                                                        name={`custom-unit-${item.id}`}
+                                                                        value={customUnitPriceValue}
+                                                                        min={0}
+                                                                        placeholder={`Ex: ${formatCurrency(item.prices.pv1)}`}
+                                                                        onChange={(val) => setCustomUnitPriceValue(val)}
+                                                                    />
+                                                                    <Button variant="primary" size="sm" onClick={handleApplyCustomUnitPrice}>Aplicar Unitário</Button>
+                                                                </Flex>
+                                                            </Flex>
+                                                        </Flex>
+                                                    </ModalBody>
+                                                </Modal>
+                                            }
+                                            onClick={() => { setCustomPriceItemId(item.id); setCustomPriceValue(undefined); }}
+                                        >
+                                            Personalizado...
                                         </Button>
-                                        <Button variant="secondary" size="xs" onClick={() => { if (item.prices.pv2) { setAmount(item.prices.pv2); handleSaveAmount(item.prices.pv2); } }}>
-                                            PV2: {formatCurrency(item.prices.pv2)}
-                                        </Button>
-                                        <Button variant="secondary" size="xs" onClick={() => { if (item.prices.pv3) { setAmount(item.prices.pv3); handleSaveAmount(item.prices.pv3); } }}>
-                                            PV3: {formatCurrency(item.prices.pv3)}
-                                        </Button>
+                                        {selectedPrices[item.id] !== undefined && (
+                                            <Text variant="microcopy">Selecionado: {formatCurrency(selectedPrices[item.id])}</Text>
+                                        )}
                                     </Flex>
                                 </TableCell>
                             </TableRow>
                         ))}
                     </TableBody>
                 </Table>
+                {/* Footer row with sum button */}
+                <Flex justify="end" gap="sm" align="center">
+                    <Text format={{ fontWeight: "bold" }}>Total Selecionado: {formatCurrency(calculateSelectedTotal())}</Text>
+                    <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => {
+                            const total = calculateSelectedTotal();
+                            setAmount(total);
+                            handleSaveAmount(total);
+                        }}
+                        disabled={Object.keys(selectedPrices).length === 0}
+                    >
+                        Aplicar ao Valor Total
+                    </Button>
+                </Flex>
             </Accordion>
 
             {hasStockIssue && (
@@ -313,29 +617,6 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
                 </Alert>
             )}
 
-            <Divider />
-
-            {/* AMOUNT INPUT SECTION */}
-            <Flex direction="column" gap="sm">
-                <Text format={{ fontWeight: "bold" }}>Valor do Negócio (Amount)</Text>
-                <Flex gap="sm" align="end">
-                    <Box flex={1}>
-                        <NumberInput
-                            name="amount"
-                            label="Valor Total"
-                            value={amount}
-                            min={0}
-                            onChange={(value) => setAmount(value)}
-                            onBlur={() => handleSaveAmount()}
-                            error={!!saveError || !!saveWarning}
-                            validationMessage={saveError ?? (saveWarning ?? undefined)}
-                        />
-                    </Box>
-                    {saving && <LoadingSpinner size="sm" />}
-                    {saveSuccess && <Text variant="microcopy">✓ Salvo!</Text>}
-                </Flex>
-                {saveWarning && <Alert title="Atenção" variant="warning">{saveWarning}</Alert>}
-            </Flex>
 
             <Divider />
 
@@ -351,7 +632,7 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
                 {converting ? "Gerando Pedido..." : "Faturar (Gerar Pedido)"}
             </Button>
 
-        </Flex>
+        </Flex >
     );
 };
 

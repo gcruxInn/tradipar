@@ -111,7 +111,7 @@ async function getDealSankhyaContext(objectId, token) {
     // Fetch details in batches or parallel
     await Promise.all(lineItemIds.map(async (id) => {
       try {
-        const resp = await axios.get(`https://api.hubspot.com/crm/v3/objects/line_items/${id}?properties=sankhya_codprod,codprod,hs_product_id,quantity,name`, { headers: { Authorization: `Bearer ${token}` } });
+        const resp = await axios.get(`https://api.hubspot.com/crm/v3/objects/line_items/${id}?properties=sankhya_codprod,codprod,hs_product_id,quantity,name,price`, { headers: { Authorization: `Bearer ${token}` } });
         const lp = resp.data.properties;
         let codProd = lp.sankhya_codprod || lp.codprod;
 
@@ -125,7 +125,8 @@ async function getDealSankhyaContext(objectId, token) {
             id,
             name: lp.name || `Item ${id}`,
             codProd: toInt("codProd", codProd),
-            quantity: Number(lp.quantity || 0)
+            quantity: Number(lp.quantity || 0),
+            currentPrice: lp.price ? Number(lp.price) : null
           });
         }
       } catch (e) { console.warn(`Erro ao buscar item ${id}:`, e.message); }
@@ -292,6 +293,38 @@ app.post("/hubspot/update/deal", async (req, res) => {
     }
     return res.json({ status: blockSave ? "WARNING" : "SUCCESS", message: warningMsg });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/hubspot/update/line-item", async (req, res) => {
+  try {
+    const { lineItemId, quantity, price } = req.body;
+    if (!lineItemId) return res.status(400).json({ error: "Missing lineItemId" });
+
+    const properties = {};
+    if (quantity !== undefined && quantity !== null) {
+      properties.quantity = String(quantity);
+    }
+    if (price !== undefined && price !== null) {
+      properties.price = String(price);
+    }
+
+    if (Object.keys(properties).length === 0) {
+      return res.status(400).json({ error: "Missing quantity or price to update" });
+    }
+
+    console.log(`[UPDATE] Updating LineItem ${lineItemId}:`, properties);
+
+    await axios.patch(
+      `https://api.hubapi.com/crm/v3/objects/line_items/${lineItemId}`,
+      { properties },
+      { headers: { Authorization: `Bearer ${process.env.HUBSPOT_ACCESS_TOKEN}` } }
+    );
+
+    return res.json({ status: "SUCCESS" });
+  } catch (err) {
+    console.error(`[UPDATE ERROR] ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
