@@ -187,6 +187,44 @@ async function postGatewayWithRetry(body) {
   }
 }
 
+
+function executeSankhyaQuery(sql) {
+  console.log(`[QUERY] Executing: ${sql.substring(0, 100)}...`);
+  return postGatewayWithRetry({ requestBody: { sql } }).then(response => {
+    const rb = response.data?.responseBody;
+    console.log(`[QUERY] Response keys: ${rb ? Object.keys(rb).join(',') : 'NULL'}`);
+
+    // Try multiple parsing strategies
+    let rows = rb?.rows;
+    let fields = rb?.fieldsMetadata;
+
+    // Fallback: resultSet structure
+    if (!rows && rb?.resultSet) {
+      console.log(`[QUERY] Using resultSet fallback`);
+      rows = rb.resultSet.rows;
+      fields = rb.resultSet.fieldsMetadata || rb.fieldsMetadata;
+    }
+
+    if (!rows || !fields) {
+      console.log(`[QUERY] No rows or fields found. Raw: ${JSON.stringify(response.data).substring(0, 500)}`);
+      return [];
+    }
+
+    console.log(`[QUERY] Parsed ${rows.length} rows, ${fields.length} fields`);
+    const fieldNames = fields.map(f => f.name);
+    return rows.map(row => {
+      const obj = {};
+      fieldNames.forEach((field, i) => {
+        obj[field] = row[i];
+      });
+      return obj;
+    });
+  }).catch(err => {
+    console.error(`[QUERY ERROR] ${err.message}`);
+    throw err;
+  });
+}
+
 function parseDbExplorerFirstValue(data) {
   const rb = data?.responseBody;
   if (Array.isArray(rb?.rows) && rb.rows.length) return Number(rb.rows[0]?.[0]);
@@ -353,6 +391,174 @@ app.post("/debug/sql", async (req, res) => {
     const response = await postGatewayWithRetry({ requestBody: { sql } });
     res.json(response.data);
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- IMPORTAÇÃO SANKHYA -> HUBSPOT (Enterprise Grade) ---
+
+// Helper: Search HubSpot Company by property
+async function findHubSpotCompany(token, propertyName, value) {
+  if (!value) return null;
+  try {
+    const response = await axios.post(`https://api.hubspot.com/crm/v3/objects/companies/search`, {
+      filterGroups: [{ filters: [{ propertyName, operator: "EQ", value: String(value) }] }],
+      properties: ["name", "cnpj", "cpf", "codparc"]
+    }, { headers: { Authorization: `Bearer ${token}` } });
+    return response.data.total > 0 ? response.data.results[0] : null;
+  } catch (err) {
+    console.warn(`[SEARCH WARN] ${propertyName}=${value}: ${err.message}`);
+    return null;
+  }
+}
+
+app.post("/sankhya/import/partners", async (req, res) => {
+  console.log("[IMPORT] ========== INÍCIO DA IMPORTAÇÃO ==========");
+  const token = process.env.HUBSPOT_ACCESS_TOKEN;
+  const { since, limit, offset = 0 } = req.body; // since = ISO date, offset for pagination
+
+  try {
+    // 1. Query Sankhya - TODOS os campos disponíveis (baseado em GerarJsonParceiro.java)
+    let query = `
+      SELECT P.CODPARC, P.NOMEPARC, P.RAZAOSOCIAL, P.CGC_CPF, P.EMAIL, P.TELEFONE, 
+             P.CEP, P.NUMEND, P.COMPLEMENTO, P.TIPPESSOA, P.INSCESTADNAUF, 
+             P.FORNECEDOR, P.CLIENTE, P.CODTAB, P.CODVEND, P.LIMCRED, 
+             P.BLOQUEAR, P.EMAILNFE, P.CODCID, P.DTALTER,
+             P.TIPOFATUR, P.OBSERVACOES, P.CODGRUPO, P.CLASSIFICMS,
+             NVL(EDR.TIPO,'') || ' ' || NVL(EDR.NOMEEND,'') AS ENDERECO,
+             BAI.NOMEBAI AS BAIRRO,
+             CID.NOMECID
+      FROM TGFPAR P
+      LEFT JOIN TSIEND EDR ON EDR.CODEND = P.CODEND
+      LEFT JOIN TSICID CID ON CID.CODCID = P.CODCID
+      LEFT JOIN TSIBAI BAI ON BAI.CODBAI = P.CODBAI
+      WHERE P.ATIVO = 'S' AND P.TIPPESSOA = 'J'
+    `;
+    if (since) {
+      query += ` AND P.DTALTER >= TO_DATE('${since}', 'YYYY-MM-DD"T"HH24:MI:SS')`;
+    }
+    query += ` ORDER BY P.CODPARC DESC`;
+
+    // Default limit de 1000 se não especificado (evita timeout em full syncs muito grandes)
+    const effectiveLimit = limit !== undefined ? limit : 1000;
+
+    // Pagination: OFFSET + FETCH (Oracle 12c+)
+    if (offset > 0) {
+      query += ` OFFSET ${offset} ROWS`;
+    }
+    if (effectiveLimit > 0) {
+      query += ` FETCH FIRST ${effectiveLimit} ROWS ONLY`;
+    }
+
+    console.log(`[IMPORT] Limit efetivo: ${effectiveLimit === 1000 ? '1000 (padrão)' : effectiveLimit}`);
+
+    const partners = await executeSankhyaQuery(query) || [];
+    console.log(`[IMPORT] ${partners.length} parceiros a processar${since ? ` (desde ${since})` : ''}`);
+
+
+    const stats = { created: 0, updated: 0, errors: 0, skipped: 0 };
+    const auditLog = [];
+    const delay = ms => new Promise(r => setTimeout(r, ms));
+
+    for (const parc of partners) {
+      const taxId = parc.CGC_CPF ? String(parc.CGC_CPF).replace(/\D/g, '') : null;
+      const sankhyaId = String(parc.CODPARC);
+      const isPJ = taxId && taxId.length === 14; // CNPJ
+      const isPF = taxId && taxId.length === 11; // CPF
+
+      // === DEDUPLICAÇÃO COM HIERARQUIA ===
+      let company = null;
+      let matchedBy = null;
+
+      // 1. Tentar CNPJ (PJ)
+      if (isPJ) {
+        company = await findHubSpotCompany(token, "cnpj", taxId);
+        if (company) matchedBy = "CNPJ";
+      }
+
+      // 2. Fallback: CPF (PF)
+      if (!company && isPF) {
+        company = await findHubSpotCompany(token, "cpf", taxId);
+        if (company) matchedBy = "CPF";
+      }
+
+      // 3. Fallback: Sankhya ID (busca por codparc)
+      if (!company) {
+        company = await findHubSpotCompany(token, "codparc", sankhyaId);
+        if (company) matchedBy = "CODPARC";
+      }
+
+      // === MAPEAR TODAS AS PROPRIEDADES DISPONÍVEIS ===
+      const properties = {
+        name: parc.NOMEPARC || parc.RAZAOSOCIAL,
+        razao_social: parc.RAZAOSOCIAL || undefined,
+        codparc: sankhyaId,
+        sankhya_partner_id: sankhyaId,
+        ativo_sankhya: true,
+        email: parc.EMAIL || undefined,
+        phone: parc.TELEFONE ? String(parc.TELEFONE) : undefined,
+        address: parc.ENDERECO || undefined,
+        numero_do_endereco: parc.NUMEND || undefined,
+        bairro: parc.BAIRRO || undefined,
+        city: parc.NOMECID || undefined,
+        zip: parc.CEP || undefined,
+        inscricao_estadual: parc.INSCESTADNAUF || undefined,
+        limite_credito: parc.LIMCRED ? Number(parc.LIMCRED) : undefined,
+        bloqueado_financeiro: parc.BLOQUEAR === 'S',
+        email_nfe: parc.EMAILNFE || undefined,
+        tipo_pagamento: parc.TIPOFATUR || undefined,
+        description: parc.OBSERVACOES || undefined,
+        grupo_parceiro: parc.CODGRUPO ? String(parc.CODGRUPO) : undefined,
+        classificacao_icms: parc.CLASSIFICMS || undefined,
+        tabela_preco_id: parc.CODTAB ? String(parc.CODTAB) : undefined,
+        codvend: parc.CODVEND ? Number(parc.CODVEND) : undefined,
+        is_cliente: parc.CLIENTE === 'S',
+        is_fornecedor: parc.FORNECEDOR === 'S',
+        tipo_de_pessoa: parc.TIPPESSOA === 'J' ? 'Jurídica' : 'Física'
+      };
+
+      // Popular CNPJ ou CPF
+      if (isPJ) properties.cnpj = taxId;
+      if (isPF) properties.cpf = taxId;
+
+      // Limpar undefined
+      Object.keys(properties).forEach(k => properties[k] === undefined && delete properties[k]);
+
+      try {
+        if (company) {
+          // UPDATE
+          await axios.patch(`https://api.hubspot.com/crm/v3/objects/companies/${company.id}`, { properties }, { headers: { Authorization: `Bearer ${token}` } });
+          console.log(`[UPDATE] ${matchedBy} -> ID ${company.id} - ${properties.name}`);
+          stats.updated++;
+          auditLog.push({ op: "UPDATE", sankhyaId, hubspotId: company.id, matchedBy });
+        } else {
+          // CREATE
+          const createResp = await axios.post(`https://api.hubspot.com/crm/v3/objects/companies`, { properties }, { headers: { Authorization: `Bearer ${token}` } });
+          console.log(`[CREATE] ${properties.name} -> ID ${createResp.data.id}`);
+          stats.created++;
+          auditLog.push({ op: "CREATE", sankhyaId, hubspotId: createResp.data.id });
+        }
+      } catch (err) {
+        const errMsg = err.response?.data?.message || err.message;
+        console.error(`[ERROR] Parc ${sankhyaId}: ${errMsg}`);
+        stats.errors++;
+        auditLog.push({ op: "ERROR", sankhyaId, error: errMsg });
+      }
+
+      await delay(120); // Rate limit safe
+    }
+
+    console.log(`[IMPORT] ========== FIM: ${JSON.stringify(stats)} ==========`);
+    res.json({
+      status: "SUCCESS",
+      stats,
+      processed: partners.length,
+      nextOffset: offset + partners.length,  // For stateful batch processing
+      auditLog: auditLog.slice(0, 20)
+    });
+
+  } catch (err) {
+    console.error(`[IMPORT FATAL] ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
