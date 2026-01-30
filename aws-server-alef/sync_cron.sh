@@ -19,8 +19,11 @@ echo "========================================" >> $LOG_FILE
 
 cd $SCRIPT_DIR
 
-# Executar full sync com batch size 25 (evita timeout Cloudflare 524)
-node full_sync_partners.js https://api.gcrux.com 25 >> $LOG_FILE 2>&1
+# Executar incremental sync de parceiros (apenas alterações das ultimas 24h)
+node full_sync_partners.js https://api.gcrux.com 25 --incremental >> $LOG_FILE 2>&1
+
+# Executar incremental sync de produtos (apenas alterações das ultimas 24h)
+node full_sync_products.js https://api.gcrux.com 25 --incremental >> $LOG_FILE 2>&1
 
 EXIT_CODE=$?
 

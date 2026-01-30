@@ -2,18 +2,13 @@ import axios from 'axios';
 import fs from 'fs';
 
 /**
- * Full Sync em Batches - Importa TODOS os parceiros ativos do Sankhya
- * Processa em lotes com paginação (offset) até acabar todos os registros
+ * Full Sync de Produtos em Batches - Sankhya -> HubSpot
  * 
  * Uso:
- *   node full_sync_partners.js [URL_BASE] [BATCH_SIZE]
- * 
- * Exemplo:
- *   node full_sync_partners.js https://api.gcrux.com
- *   node full_sync_partners.js https://api.gcrux.com 500
+ *   node full_sync_products.js [URL_BASE] [BATCH_SIZE] [--resume]
  */
 
-const STATE_FILE = './sync_state.json';
+const STATE_FILE = './product_sync_state.json';
 
 function loadState() {
     if (fs.existsSync(STATE_FILE)) {
@@ -34,27 +29,26 @@ function saveState(offset, stats) {
     }, null, 2));
 }
 
-async function fullSyncPartners() {
+async function fullSyncProducts() {
     const baseUrl = process.argv[2] || "http://localhost:3000";
     const batchSize = parseInt(process.argv[3]) || 1000;
     const resumeFromState = process.argv.includes('--resume');
     const isIncremental = process.argv.includes('--incremental');
-    const endpoint = `${baseUrl}/sankhya/import/partners`;
+    const endpoint = `${baseUrl}/sankhya/import/products`;
 
-    console.log("🚀 Sync de Parceiros - Sankhya -> HubSpot");
+    console.log("🚀 Sync de Produtos - Sankhya -> HubSpot");
     console.log(`📡 Target: ${endpoint}`);
     console.log(`📦 Batch Size: ${batchSize}`);
     console.log(`🔄 Mode: ${isIncremental ? 'INCREMENTAL (Last 24h)' : 'FULL SYNC'}`);
 
-    // Incremental logic: Start from 0, since it's a new "delta" query
+    // Incremental logic
     let sinceDate = null;
     if (isIncremental) {
         const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000); // 24h ago
-        sinceDate = yesterday.toISOString().split('.')[0]; // Remove milliseconds for Oracle format safety
+        sinceDate = yesterday.toISOString().split('.')[0];
     }
 
     const state = loadState();
-    // Only resume if explicitly asked AND NOT incremental (incremental is always fresh delta)
     let currentOffset = (resumeFromState && !isIncremental) ? state.lastOffset : 0;
 
     if (resumeFromState && !isIncremental && state.lastOffset > 0) {
@@ -84,47 +78,35 @@ async function fullSyncPartners() {
 
             const { stats, processed, nextOffset } = response.data;
 
-            // Se não processou nada, acabaram os registros
             if (processed === 0) {
-                console.log(`✅ Nenhum registro novo encontrado. Sync completo!`);
+                console.log(`✅ Nenhum produto novo encontrado. Sync completo!`);
                 break;
             }
 
-            const batchCreated = stats.created || 0;
-            const batchUpdated = stats.updated || 0;
-            const batchErrors = stats.errors || 0;
-
-            totalCreated += batchCreated;
-            totalUpdated += batchUpdated;
-            totalErrors += batchErrors;
+            totalCreated += (stats.created || 0);
+            totalUpdated += (stats.updated || 0);
+            totalErrors += (stats.errors || 0);
             totalProcessed += processed;
 
             console.log(`   Processados: ${processed}`);
-            console.log(`   ├─ Criados: ${batchCreated}`);
-            console.log(`   ├─ Atualizados: ${batchUpdated}`);
-            console.log(`   └─ Erros: ${batchErrors}`);
+            console.log(`   ├─ Criados: ${stats.created || 0}`);
+            console.log(`   ├─ Atualizados: ${stats.updated || 0}`);
+            console.log(`   └─ Erros: ${stats.errors || 0}`);
 
-            // Atualizar offset usando o nextOffset retornado pela API
             currentOffset = nextOffset;
-
-            // Salvar estado após cada batch (crash recovery)
             saveState(currentOffset, { totalCreated, totalUpdated, totalErrors, totalProcessed });
 
-            // Se processou menos que o batch size, acabaram os registros
             if (processed < batchSize) {
-                console.log(`\n✅ Último batch processado (${processed} < ${batchSize}). Sync completo!`);
+                console.log(`\n✅ Último batch processado. Sync completo!`);
                 break;
             }
 
-            // Delay entre batches para não sobrecarregar
             console.log(`⏳ Aguardando 2s antes do próximo batch...`);
             await new Promise(r => setTimeout(r, 2000));
         }
 
-
         const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-
-        console.log("\n\n✅ ========== SYNC COMPLETO ==========");
+        console.log("\n\n✅ ========== SYNC DE PRODUTOS COMPLETO ==========");
         console.log(`⏱️  Tempo Total: ${duration}s`);
         console.log(`📦 Batches: ${batchNumber}`);
         console.log(`📊 Total Processados: ${totalProcessed}`);
@@ -137,10 +119,10 @@ async function fullSyncPartners() {
             console.log("💡 Verifique os logs do servidor para detalhes dos erros.");
         }
 
-        console.log("\n🎉 Full Sync concluído com sucesso!");
+        console.log("\n🎉 Sync de Produtos concluído com sucesso!");
 
     } catch (error) {
-        console.error("\n❌ Erro no Full Sync:");
+        console.error("\n❌ Erro no Sync de Produtos:");
         if (error.response) {
             console.error(`   Status: ${error.response.status}`);
             console.error(`   Mensagem: ${JSON.stringify(error.response.data)}`);
@@ -160,4 +142,4 @@ async function fullSyncPartners() {
     }
 }
 
-fullSyncPartners();
+fullSyncProducts();

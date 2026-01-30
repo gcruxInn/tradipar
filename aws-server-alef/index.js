@@ -563,7 +563,107 @@ app.post("/sankhya/import/partners", async (req, res) => {
   }
 });
 
+// Helper: Search HubSpot Product by SKU
+async function findHubSpotProduct(token, sku) {
+  if (!sku) return null;
+  try {
+    const response = await axios.post(`https://api.hubspot.com/crm/v3/objects/products/search`, {
+      filterGroups: [{ filters: [{ propertyName: "hs_sku", operator: "EQ", value: String(sku) }] }],
+      properties: ["name", "hs_sku", "description", "unit_of_measure"]
+    }, { headers: { Authorization: `Bearer ${token}` } });
+    return response.data.total > 0 ? response.data.results[0] : null;
+  } catch (err) {
+    console.warn(`[PRODUCT SEARCH WARN] SKU=${sku}: ${err.message}`);
+    return null;
+  }
+}
+
+app.post("/sankhya/import/products", async (req, res) => {
+  console.log("[PRODUCT IMPORT] ========== INÍCIO DA IMPORTAÇÃO ==========");
+  const token = process.env.HUBSPOT_ACCESS_TOKEN;
+  const { since, limit, offset = 0 } = req.body;
+
+  try {
+    let query = `
+      SELECT CODPROD, DESCRPROD, COMPLDESC, CODVOL, ATIVO, REFERENCIA, PESOLIQ, DTALTER 
+      FROM TGFPRO 
+      WHERE ATIVO = 'S'
+    `;
+    if (since) {
+      query += ` AND DTALTER >= TO_DATE('${since}', 'YYYY-MM-DD"T"HH24:MI:SS')`;
+    }
+    query += ` ORDER BY CODPROD DESC`;
+
+    const effectiveLimit = limit !== undefined ? limit : 1000;
+    if (offset > 0) {
+      query += ` OFFSET ${offset} ROWS`;
+    }
+    if (effectiveLimit > 0) {
+      query += ` FETCH FIRST ${effectiveLimit} ROWS ONLY`;
+    }
+
+    const products = await executeSankhyaQuery(query) || [];
+    console.log(`[PRODUCT IMPORT] ${products.length} produtos a processar`);
+
+    const stats = { created: 0, updated: 0, errors: 0, skipped: 0 };
+    const auditLog = [];
+    const delay = ms => new Promise(r => setTimeout(r, ms));
+
+    for (const prod of products) {
+      const sku = String(prod.CODPROD);
+
+      // 1. Tentar encontrar por SKU (Deduplicação)
+      let hsProduct = await findHubSpotProduct(token, sku);
+
+      const properties = {
+        name: prod.DESCRPROD,
+        hs_sku: sku,
+        description: prod.COMPLDESC || undefined
+      };
+
+      // Limpar undefined
+      Object.keys(properties).forEach(k => properties[k] === undefined && delete properties[k]);
+
+      try {
+        if (hsProduct) {
+          // UPDATE
+          await axios.patch(`https://api.hubspot.com/crm/v3/objects/products/${hsProduct.id}`, { properties }, { headers: { Authorization: `Bearer ${token}` } });
+          console.log(`[UPDATE PRODUCT] SKU ${sku} -> ID ${hsProduct.id} - ${properties.name}`);
+          stats.updated++;
+          auditLog.push({ op: "UPDATE", sku, hubspotId: hsProduct.id });
+        } else {
+          // CREATE
+          const createResp = await axios.post(`https://api.hubspot.com/crm/v3/objects/products`, { properties }, { headers: { Authorization: `Bearer ${token}` } });
+          console.log(`[CREATE PRODUCT] ${properties.name} -> ID ${createResp.data.id}`);
+          stats.created++;
+          auditLog.push({ op: "CREATE", sku, hubspotId: createResp.data.id });
+        }
+      } catch (err) {
+        const errMsg = err.response?.data?.message || err.message;
+        console.error(`[ERROR PRODUCT] SKU ${sku}: ${errMsg}`);
+        stats.errors++;
+        auditLog.push({ op: "ERROR", sku, error: errMsg });
+      }
+
+      await delay(120); // Rate limit safe
+    }
+
+    console.log(`[PRODUCT IMPORT] ========== FIM: ${JSON.stringify(stats)} ==========`);
+    res.json({
+      status: "SUCCESS",
+      stats,
+      processed: products.length,
+      nextOffset: offset + products.length,
+      auditLog: auditLog.slice(0, 20)
+    });
+
+  } catch (err) {
+    console.error(`[PRODUCT IMPORT FATAL] ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(Number(process.env.PORT || 3000), () => {
   console.log(`🚀 API: http://localhost:${process.env.PORT || 3000}`);
-  console.log("--- SYSTEM READY (v1.2 - Quote Discovery + Clean Logs) ---");
+  console.log("--- SYSTEM READY (v1.3 - Product Sync Support) ---");
 });
