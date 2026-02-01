@@ -220,7 +220,8 @@ function executeSankhyaQuery(sql) {
       return obj;
     });
   }).catch(err => {
-    console.error(`[QUERY ERROR] ${err.message}`);
+    const errorDetail = err.response?.data || err.message;
+    console.error(`[QUERY ERROR] ${JSON.stringify(errorDetail)}`);
     throw err;
   });
 }
@@ -577,6 +578,75 @@ async function findHubSpotProduct(token, sku) {
     return null;
   }
 }
+// DEBUG: Endpoint para ver colunas disponíveis
+app.get("/sankhya/debug/products", async (req, res) => {
+  try {
+    const result = await executeSankhyaQuery("SELECT * FROM TGFPRO WHERE ROWNUM <= 1");
+    res.json(result);
+  } catch (error) {
+    res.status(500).send(error.message);
+  }
+});
+// DEBUG: Endpoint para ver tabelas de preço
+app.get("/sankhya/debug/pricetables", async (req, res) => {
+  try {
+    const result = await executeSankhyaQuery("SELECT NUTAB, NOMETAB FROM TGFTAB WHERE ATIVA = 'S'");
+    res.json(result);
+  } catch (error) {
+    res.status(500).send(error.message);
+  }
+});
+
+app.get("/sankhya/debug/price-scan", async (req, res) => {
+  try {
+    const query = `
+      SELECT E.NUTAB, COUNT(1) as QTD 
+      FROM TGFEXC E
+      JOIN TGFPRO P ON P.CODPROD = E.CODPROD
+      WHERE P.ATIVO = 'S'
+      GROUP BY E.NUTAB
+      ORDER BY COUNT(1) DESC
+    `;
+    const result = await executeSankhyaQuery(query);
+    res.json(result);
+  } catch (error) {
+    res.status(500).send(error.message);
+  }
+});
+
+app.get("/sankhya/debug/price/:sku", async (req, res) => {
+  try {
+    const { sku } = req.params;
+    const query = `
+      SELECT NUTAB, VLRVENDA, CODPROD
+      FROM TGFEXC 
+      WHERE CODPROD = ${sku}
+    `;
+    const result = await executeSankhyaQuery(query);
+    res.json(result);
+  } catch (error) {
+    res.status(500).send(error.message);
+  }
+});
+
+app.get("/hubspot/debug/product-properties", async (req, res) => {
+  try {
+    const token = process.env.HUBSPOT_ACCESS_TOKEN;
+    const response = await axios.get('https://api.hubspot.com/crm/v3/properties/products', {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    // Return sorted by label for easier reading
+    const props = response.data.results.map(p => ({
+      label: p.label,
+      name: p.name,
+      type: p.type
+    })).sort((a, b) => a.label.localeCompare(b.label));
+
+    res.json(props);
+  } catch (error) {
+    res.status(500).json({ error: error.message, detail: error.response?.data });
+  }
+});
 
 app.post("/sankhya/import/products", async (req, res) => {
   console.log("[PRODUCT IMPORT] ========== INÍCIO DA IMPORTAÇÃO ==========");
@@ -585,14 +655,32 @@ app.post("/sankhya/import/products", async (req, res) => {
 
   try {
     let query = `
-      SELECT CODPROD, DESCRPROD, COMPLDESC, CODVOL, ATIVO, REFERENCIA, PESOLIQ, DTALTER 
-      FROM TGFPRO 
-      WHERE ATIVO = 'S'
+      SELECT 
+        P.CODPROD, P.DESCRPROD, P.COMPLDESC, P.CODVOL, P.ATIVO, P.REFERENCIA, P.PESOLIQ, P.DTALTER, P.NCM, P.MARCA, P.PESOBRUTO,
+        P.TEMIPIVENDA, P.TEMIPICOMPRA, P.TEMICMS, P.TEMINSS, P.TEMCOMISSAO, P.CALCDIFAL, P.TEMCIAP, 
+        P.PERCCMTEST, P.PERCCMTFED, P.PERCCMTIMP,
+        P.GRUPOICMS, P.GRUPOPIS, P.GRUPOCOFINS, P.GRUPOCSSL, P.CSTIPIENT, P.CSTIPISAI, P.CODESPECST,
+        P.LARGURA, P.ALTURA, P.ESPESSURA, P.FABRICANTE, P.CNPJFABRICANTE, P.CODLOCALPADRAO,
+        G.DESCRGRUPOPROD, V.DESCRVOL,
+        (SELECT VLRVENDA FROM TGFEXC WHERE CODPROD = P.CODPROD AND NUTAB = 37 AND ROWNUM = 1) AS PRECO_TAB37,
+        (SELECT VLRVENDA FROM TGFEXC WHERE CODPROD = P.CODPROD AND NUTAB = 35 AND ROWNUM = 1) AS PRECO_TAB35,
+        (SELECT VLRVENDA FROM TGFEXC WHERE CODPROD = P.CODPROD AND NUTAB = 67 AND ROWNUM = 1) AS PRECO_TAB67,
+        E.VLRVENDA AS PRECO_MAX_TOP10
+      FROM TGFPRO P
+      LEFT JOIN TGFGRU G ON P.CODGRUPOPROD = G.CODGRUPOPROD
+      LEFT JOIN TGFVOL V ON P.CODVOL = V.CODVOL
+      LEFT JOIN (
+        SELECT CODPROD, MAX(VLRVENDA) as VLRVENDA 
+        FROM TGFEXC 
+        WHERE NUTAB IN (37, 35, 67, 42, 66, 40, 41, 49, 65, 47) 
+        GROUP BY CODPROD
+      ) E ON P.CODPROD = E.CODPROD
+      WHERE P.ATIVO = 'S'
     `;
     if (since) {
-      query += ` AND DTALTER >= TO_DATE('${since}', 'YYYY-MM-DD"T"HH24:MI:SS')`;
+      query += ` AND P.DTALTER >= TO_DATE('${since}', 'YYYY-MM-DD"T"HH24:MI:SS')`;
     }
-    query += ` ORDER BY CODPROD DESC`;
+    query += ` ORDER BY P.CODPROD DESC`;
 
     const effectiveLimit = limit !== undefined ? limit : 1000;
     if (offset > 0) {
@@ -611,15 +699,88 @@ app.post("/sankhya/import/products", async (req, res) => {
 
     for (const prod of products) {
       const sku = String(prod.CODPROD);
-
-      // 1. Tentar encontrar por SKU (Deduplicação)
       let hsProduct = await findHubSpotProduct(token, sku);
 
-      const properties = {
-        name: prod.DESCRPROD,
-        hs_sku: sku,
-        description: prod.COMPLDESC || undefined
+      // Lógica de Prioridade de Preço Global (Para o campo price padrão)
+      const priceDefault = prod.PRECO_MAX_TOP10 || prod.PRECO_TAB37 || prod.PRECO_TAB35 || undefined;
+
+      // Conversão de Booleanos 'S'/'N' para string "true"/"false" (para Checkboxes/Booleans no HubSpot)
+      const boolStr = (val) => (val === 'S' || val === 's') ? "true" : "false";
+
+      // Mapeamento de Códigos de IPI para as Opções do HubSpot (Internal Names/Values)
+      const mapIpiEntrada = (val) => {
+        const s = val ? String(val).trim().padStart(2, '0') : "";
+        if (s === '49') return '49-Outras Entradas';
+        if (s === '03') return '03-Entrada Não Tributada';
+        if (s === '-1') return '(-1)-Não sujeita ao IPI';
+        return val ? String(val) : undefined;
       };
+      const mapIpiSaida = (val) => {
+        const s = val ? String(val).trim().padStart(2, '0') : "";
+        if (s === '99') return '99-Outras Saídas';
+        if (s === '53') return '53-Saída Não Tributada';
+        if (s === '-1') return '(-1)-Não sujeita ao IPI';
+        return val ? String(val) : undefined;
+      };
+
+      const properties = {
+        // --- Core ---
+        name: prod.DESCRPROD,
+        price: priceDefault,
+        hs_price_brl: priceDefault,
+        hs_sku: sku,
+        description: prod.COMPLDESC || undefined,
+        ativo: boolStr(prod.ATIVO),
+
+        // --- PVs (Tabelas Fixas) ---
+        pv1: prod.PRECO_TAB37 || undefined,
+        pv2: prod.PRECO_TAB35 || undefined,
+        pv3: prod.PRECO_TAB67 || undefined,
+
+        // --- Tributação Booleans (true/false) ---
+        tem_ipi_na_venda: boolStr(prod.TEMIPIVENDA),
+        tem_ipi_na_compra: boolStr(prod.TEMIPICOMPRA),
+        calcular_icms: boolStr(prod.TEMICMS),
+        tem_inss: boolStr(prod.TEMINSS),
+        calcular_comissao: boolStr(prod.TEMCOMISSAO),
+        calcular_difal: boolStr(prod.CALCDIFAL),
+        atualizar_ciap: boolStr(prod.TEMCIAP),
+
+        // --- Classificação ---
+        ncm: prod.NCM ? Number(String(prod.NCM).replace(/\D/g, '')) : undefined,
+        cest__codigo_especificador_st: prod.CODESPECST ? Number(prod.CODESPECST) : undefined,
+        grupo_icms: prod.GRUPOICMS || undefined,
+        grupo_pis: prod.GRUPOPIS || undefined,
+        grupo_cofins: prod.GRUPOCOFINS || undefined,
+        grupo_csll: prod.GRUPOCSSL || undefined,
+        codigo_sittribipi_entrada: mapIpiEntrada(prod.CSTIPIENT),
+        codigo_sittribipi_saida: mapIpiSaida(prod.CSTIPISAI),
+
+        // --- Percentuais ---
+        carga_media_trib_estadual: prod.PERCCMTEST ? Number(prod.PERCCMTEST) : undefined,
+        carga_media_trib_federal: prod.PERCCMTFED ? Number(prod.PERCCMTFED) : undefined,
+        carga_media_trib_importacao: prod.PERCCMTIMP ? Number(prod.PERCCMTIMP) : undefined,
+
+        // --- Dimensões e Pesos ---
+        peso_bruto: prod.PESOBRUTO ? Number(prod.PESOBRUTO) : undefined,
+        unidade: prod.CODVOL || undefined,
+
+        // --- Outros ---
+        marca: prod.MARCA || undefined,
+        fabricante: prod.FABRICANTE || undefined,
+        cnpj_fabricante: prod.CNPJFABRICANTE ? String(prod.CNPJFABRICANTE) : undefined,
+        referencia_ean: prod.REFERENCIA || undefined,
+        complemento_snk: prod.COMPLDESC || undefined,
+        local_padrao: prod.CODLOCALPADRAO ? String(prod.CODLOCALPADRAO) : undefined,
+        grupo: prod.DESCRGRUPOPROD || undefined,
+        sankhya_product_id: Number(sku),
+        codprod: Number(sku)
+      };
+
+      // DEBUG: Logar o primeiro produto do batch para conferência
+      if (stats.updated === 0 && stats.created === 0 && stats.errors === 0) {
+        console.log(`[DEBUG PAYLOAD] SKU ${sku}:`, JSON.stringify(properties, null, 2));
+      }
 
       // Limpar undefined
       Object.keys(properties).forEach(k => properties[k] === undefined && delete properties[k]);
@@ -639,8 +800,12 @@ app.post("/sankhya/import/products", async (req, res) => {
           auditLog.push({ op: "CREATE", sku, hubspotId: createResp.data.id });
         }
       } catch (err) {
-        const errMsg = err.response?.data?.message || err.message;
+        const errorData = err.response?.data || {};
+        const errMsg = errorData.message || err.message;
         console.error(`[ERROR PRODUCT] SKU ${sku}: ${errMsg}`);
+        if (errorData.errors) {
+          console.error(`[DETAIL ERROR] SKU ${sku}: ${JSON.stringify(errorData.errors)}`);
+        }
         stats.errors++;
         auditLog.push({ op: "ERROR", sku, error: errMsg });
       }
