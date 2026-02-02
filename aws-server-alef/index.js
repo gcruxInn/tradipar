@@ -187,6 +187,79 @@ async function postGatewayWithRetry(body) {
   }
 }
 
+// ============================================================
+// CRUD Service para INSERT/UPDATE/DELETE no Sankhya
+// ============================================================
+const CRUD_SERVICE_URL = `${baseUrl}/gateway/v1/mge/service.sbr?serviceName=CRUDServiceProvider.saveRecord&outputType=json`;
+
+async function saveSankhyaRecord(entityName, fields) {
+  let token = await getAccessToken();
+
+  // Construir o XML do request body conforme API Sankhya
+  const fieldElements = Object.entries(fields)
+    .map(([key, value]) => `<field name="${key}">${value === null ? '' : value}</field>`)
+    .join('\n        ');
+
+  const requestBody = {
+    requestBody: {
+      dataSet: {
+        rootEntity: entityName,
+        includePresentationFields: "N",
+        dataRow: {
+          localFields: {
+            [entityName]: { field: Object.entries(fields).map(([name, value]) => ({ $: { name }, _: value === null ? '' : String(value) })) }
+          }
+        }
+      }
+    }
+  };
+
+  // Formato alternativo mais simples que o Sankhya aceita
+  const simpleBody = {
+    serviceName: "CRUDServiceProvider.saveRecord",
+    requestBody: {
+      dataSet: {
+        rootEntity: entityName,
+        includePresentationFields: "N",
+        dataRow: {
+          localFields: fields
+        }
+      }
+    }
+  };
+
+  try {
+    console.log(`[CRUD] Saving to ${entityName}: ${JSON.stringify(fields).substring(0, 200)}...`);
+    const response = await axios.post(CRUD_SERVICE_URL, simpleBody, {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      timeout: 30000
+    });
+
+    console.log(`[CRUD] Response: ${JSON.stringify(response.data).substring(0, 500)}`);
+
+    if (response.data?.status === "3") {
+      invalidateToken();
+      token = await getAccessToken();
+      return await axios.post(CRUD_SERVICE_URL, simpleBody, {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        timeout: 30000
+      });
+    }
+
+    return response;
+  } catch (err) {
+    if (err.response?.status === 401) {
+      invalidateToken();
+      token = await getAccessToken();
+      return await axios.post(CRUD_SERVICE_URL, simpleBody, {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        timeout: 30000
+      });
+    }
+    throw err;
+  }
+}
+
 
 function executeSankhyaQuery(sql) {
   console.log(`[QUERY] Executing: ${sql.substring(0, 100)}...`);
@@ -264,6 +337,112 @@ async function consultaEstoque(codProd, codEmp) {
   }
 }
 
+/**
+ * Busca estoque de um produto em TODAS as empresas/unidades
+ */
+async function consultaEstoqueTodasUnidades(codProd) {
+  try {
+    const sql = `
+      SELECT 
+        E.CODEMP,
+        EMP.RAZAOSOCIAL,
+        EMP.NOMEFANTASIA,
+        SUM(E.ESTOQUE - E.RESERVADO) AS DISPONIVEL
+      FROM TGFEST E
+      INNER JOIN TSIEMP EMP ON EMP.CODEMP = E.CODEMP
+      WHERE E.CODPROD = ${codProd}
+      GROUP BY E.CODEMP, EMP.RAZAOSOCIAL, EMP.NOMEFANTASIA
+      ORDER BY EMP.CODEMP
+    `;
+    console.log(`[STK-ALL] Querying stock for CODPROD ${codProd} in all units`);
+    const response = await postGatewayWithRetry({ requestBody: { sql } });
+
+    const rb = response.data?.responseBody;
+    const stocks = [];
+
+    if (Array.isArray(rb?.rows)) {
+      for (const row of rb.rows) {
+        stocks.push({
+          codEmp: row[0],
+          razaoSocial: row[1],
+          nomeFantasia: row[2],
+          disponivel: Number(row[3]) || 0
+        });
+      }
+    }
+
+    return stocks;
+  } catch (err) {
+    console.error(`[STK-ALL] Erro: ${err.message}`);
+    return [];
+  }
+}
+
+// --- ENDPOINT: Stock from all units for a product ---
+app.get("/sankhya/stock-all-units/:codProd", async (req, res) => {
+  const { codProd } = req.params;
+
+  try {
+    console.log(`[STK-ALL] Fetching stock for CODPROD ${codProd} from all units`);
+
+    const stocks = await consultaEstoqueTodasUnidades(codProd);
+    const totalDisponivel = stocks.reduce((sum, s) => sum + s.disponivel, 0);
+
+    res.json({
+      success: true,
+      codProd: Number(codProd),
+      totalDisponivel,
+      units: stocks
+    });
+
+  } catch (error) {
+    console.error(`[STK-ALL ERROR] ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// --- ENDPOINT: Stock of multiple products from all units ---
+app.post("/sankhya/stock-all-units", async (req, res) => {
+  const { codProds } = req.body; // Array of product codes
+
+  if (!Array.isArray(codProds) || codProds.length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: "codProds deve ser um array de códigos de produto"
+    });
+  }
+
+  try {
+    console.log(`[STK-ALL] Fetching stock for ${codProds.length} products from all units`);
+
+    const results = [];
+    for (const codProd of codProds) {
+      const stocks = await consultaEstoqueTodasUnidades(codProd);
+      const totalDisponivel = stocks.reduce((sum, s) => sum + s.disponivel, 0);
+      results.push({
+        codProd: Number(codProd),
+        totalDisponivel,
+        units: stocks
+      });
+    }
+
+    res.json({
+      success: true,
+      products: results
+    });
+
+  } catch (error) {
+    console.error(`[STK-ALL ERROR] ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 app.post("/hubspot/prices/deal", async (req, res) => {
   console.log("--- Chamada /prices/deal (Multi-Item) ---");
   try {
@@ -274,23 +453,41 @@ app.post("/hubspot/prices/deal", async (req, res) => {
       return res.json({ status: "MISSING_DATA", message: "Dados incompletos (Parceiro, Empresa ou Itens).", details: ctx });
     }
 
-    // Contexto da Empresa
+    // Contexto da Empresa Selecionada
     const empresaNome = await getEmpresaNome(ctx.codEmp);
+
+    // Buscar TODAS as empresas do sistema para dual stock
+    const allCompaniesResponse = await postGatewayWithRetry({
+      requestBody: { sql: "SELECT CODEMP, RAZAOSOCIAL, NOMEFANTASIA FROM TSIEMP WHERE ATIVO = 'S' ORDER BY CODEMP" }
+    });
+    const allCompanies = allCompaniesResponse.data?.responseBody?.rows?.map(row => ({
+      codEmp: row[0],
+      razaoSocial: row[1],
+      nomeFantasia: row[2]
+    })) || [];
+
+    // Identificar a "outra empresa" (assumindo 2 empresas principais)
+    const otherCompany = allCompanies.find(c => c.codEmp !== ctx.codEmp);
+    const otherCodEmp = otherCompany?.codEmp;
 
     // Processar cada item
     const processedItems = await Promise.all(ctx.items.map(async (item) => {
-      const [pv1, pv2, pv3, estoque] = await Promise.all([
+      // Buscar preços e estoque da empresa selecionada
+      const [pv1, pv2, pv3, estoque, estoqueOutraEmpresa] = await Promise.all([
         consultaPreco(item.codProd, ctx.codParc, ctx.codEmp, 1),
         consultaPreco(item.codProd, ctx.codParc, ctx.codEmp, 2),
         consultaPreco(item.codProd, ctx.codParc, ctx.codEmp, 3),
         consultaEstoque(item.codProd, ctx.codEmp),
+        otherCodEmp ? consultaEstoque(item.codProd, otherCodEmp) : Promise.resolve(0),
       ]);
 
       return {
         ...item,
         prices: { pv1, pv2, pv3 },
         stock: estoque,
-        stockContext: empresaNome // "RAZAO SOCIAL"
+        stockContext: empresaNome, // Empresa selecionada
+        stockOther: estoqueOutraEmpresa, // Estoque da outra empresa
+        stockOtherContext: otherCompany?.nomeFantasia || otherCompany?.razaoSocial || "Outra Unidade"
       };
     }));
 
@@ -825,6 +1022,1058 @@ app.post("/sankhya/import/products", async (req, res) => {
   } catch (err) {
     console.error(`[PRODUCT IMPORT FATAL] ${err.message}`);
     res.status(500).json({ error: err.message });
+  }
+});
+// ============================================================
+// 🔍 DISCOVERY ENDPOINT: Sankhya Quote Tables
+// ============================================================
+app.get("/sankhya/discovery/quote-tables", async (req, res) => {
+  try {
+    const token = await getAccessToken();
+
+    const queries = [
+      {
+        name: "TOPs Disponíveis (Tipos de Operação)",
+        sql: `SELECT CODTIPOPER, DESCROPER, ATIVO, TIPATUALESTOQUE, ATUALFIN, BONIFICACAO 
+              FROM TGFTOP 
+              WHERE ATIVO = 'S' 
+              ORDER BY CODTIPOPER`
+      },
+      {
+        name: "Colunas Obrigatórias - TGFCAB",
+        sql: `SELECT COLUMN_NAME, DATA_TYPE, NULLABLE, DATA_DEFAULT
+              FROM USER_TAB_COLUMNS 
+              WHERE TABLE_NAME = 'TGFCAB' 
+              AND NULLABLE = 'N'
+              ORDER BY COLUMN_ID`
+      },
+      {
+        name: "Colunas Obrigatórias - TGFITE",
+        sql: `SELECT COLUMN_NAME, DATA_TYPE, NULLABLE, DATA_DEFAULT
+              FROM USER_TAB_COLUMNS 
+              WHERE TABLE_NAME = 'TGFITE' 
+              AND NULLABLE = 'N'
+              ORDER BY COLUMN_ID`
+      },
+      {
+        name: "Sample de TGFCAB (TOP 999 - Orçamento)",
+        sql: `SELECT NUNOTA, CODPARC, CODTIPOPER, DTNEG, CODVEND, VLRNOTA, STATUSNOTA, CODCENCUS
+              FROM TGFCAB 
+              WHERE CODTIPOPER = 999 
+              AND ROWNUM <= 5
+              ORDER BY NUNOTA DESC`
+      },
+      {
+        name: "Centros de Resultado Disponíveis",
+        sql: `SELECT CODCENCUS, DESCRCENCUS FROM TSICUS WHERE ROWNUM <= 20 ORDER BY CODCENCUS`
+      },
+      {
+        name: "CODCENCUS Mais Usados em TGFCAB",
+        sql: `SELECT CODCENCUS, COUNT(*) AS QTD FROM TGFCAB WHERE CODCENCUS IS NOT NULL GROUP BY CODCENCUS ORDER BY QTD DESC FETCH FIRST 10 ROWS ONLY`
+      },
+      {
+        name: "CODNAT Mais Usados (TOP 999)",
+        sql: `SELECT CODNAT, COUNT(*) AS QTD FROM TGFCAB WHERE CODTIPOPER = 999 AND CODNAT IS NOT NULL GROUP BY CODNAT ORDER BY QTD DESC FETCH FIRST 10 ROWS ONLY`
+      },
+      {
+        name: "Naturezas Disponíveis",
+        sql: `SELECT CODNAT, DESCRNAT FROM TGFNAT WHERE ATIVO = 'S' AND ROWNUM <= 20 ORDER BY CODNAT`
+      },
+      {
+        name: "CODTIPVENDA Mais Usados (TOP 999)",
+        sql: `SELECT CODTIPVENDA, COUNT(*) AS QTD FROM TGFCAB WHERE CODTIPOPER = 999 GROUP BY CODTIPVENDA ORDER BY QTD DESC FETCH FIRST 10 ROWS ONLY`
+      },
+      {
+        name: "Modelos de Impressão (TOP 999)",
+        sql: `SELECT CODTIPOPER, CODREL, DESCRREL FROM TGFTPR WHERE CODTIPOPER = 999`
+      },
+      {
+        name: "Mapeamento para TOP 999 (TGFMODTOP)",
+        sql: `SELECT * FROM TGFMODTOP WHERE CODTIPOPER = 999`
+      },
+      {
+        name: "Todos os Relatórios (TSIREL) - Busca por Nome",
+        sql: `SELECT CODREL, NOMEREL, DESCRREL FROM TSIREL WHERE NOMEREL LIKE '%ORC%' OR NOMEREL LIKE '%PED%'`
+      },
+      {
+        name: "Relatórios Formatados (TFPMOD) - Busca por Nome",
+        sql: `SELECT CODREL, CODMOD, NOMEREL FROM TFPMOD WHERE NOMEREL LIKE '%ORC%' OR NOMEREL LIKE '%PED%'`
+      },
+      {
+        name: "Modelos de Nota (TGFTOP)",
+        sql: `SELECT CODTIPOPER, DESCROPER, CODMODNF, CODMODDOC FROM TGFTOP WHERE CODTIPOPER = 999`
+      }
+    ];
+
+    const results = {};
+
+    for (const q of queries) {
+      try {
+        const response = await postGatewayWithRetry({
+          requestBody: { sql: q.sql }
+        });
+
+        const rb = response.data?.responseBody;
+        results[q.name] = {
+          success: true,
+          rows: rb?.rows || [],
+          fields: rb?.fieldsMetadata || []
+        };
+      } catch (err) {
+        results[q.name] = {
+          success: false,
+          error: err.message
+        };
+      }
+    }
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      results
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
+// ============================================================
+// 🔍 DISCOVERY: Test Available Sankhya Services
+// ============================================================
+app.get("/sankhya/discovery/services", async (req, res) => {
+  try {
+    const token = await getAccessToken();
+
+    // Lista de serviços candidatos para criar notas/orçamentos
+    const services = [
+      { module: "mge", name: "CACSP.incluirNota" },
+      { module: "mgecom", name: "CACSP.incluirNota" },
+      { module: "mge", name: "SelecaoDocumentoSP.incluirNota" },
+      { module: "mgecom", name: "SelecaoDocumentoSP.incluirNota" },
+      { module: "mge", name: "ServicosNfeSP.incluirNota" },
+      { module: "mge", name: "CRUDServiceProvider.saveRecord" },
+      { module: "mgecom", name: "CRUDServiceProvider.saveRecord" },
+      { module: "mge", name: "DataSetSP.save" },
+      { module: "mgecom", name: "DataSetSP.save" }
+    ];
+
+    const results = [];
+
+    for (const svc of services) {
+      const url = `${baseUrl}/gateway/v1/${svc.module}/service.sbr?serviceName=${svc.name}&outputType=json`;
+      try {
+        const resp = await axios.post(url, {
+          serviceName: svc.name,
+          requestBody: {}
+        }, {
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          timeout: 5000
+        });
+
+        results.push({
+          module: svc.module,
+          service: svc.name,
+          status: resp.data?.status,
+          message: resp.data?.statusMessage?.substring(0, 100) || "OK",
+          available: !resp.data?.statusMessage?.includes("Nenhum provedor")
+        });
+      } catch (e) {
+        results.push({
+          module: svc.module,
+          service: svc.name,
+          status: "ERROR",
+          message: e.message.substring(0, 100),
+          available: false
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      baseUrl,
+      results,
+      availableServices: results.filter(r => r.available).map(r => `${r.module}/${r.service}`)
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================
+// 🔍 DEBUG ENDPOINT: Inspect Deal Structure
+// ============================================================
+app.get("/hubspot/debug-deal/:dealId", async (req, res) => {
+  try {
+    const { dealId } = req.params;
+    const hubspotToken = requireEnv("HUBSPOT_ACCESS_TOKEN");
+
+    // Buscar Deal com todas as associações possíveis
+    const dealUrl = `https://api.hubspot.com/crm/v3/objects/deals/${dealId}?associations=companies,contacts,quotes,line_items&properties=dealname,amount,dealstage`;
+    const dealResp = await axios.get(dealUrl, {
+      headers: { Authorization: `Bearer ${hubspotToken}` }
+    });
+
+    const deal = dealResp.data;
+    const result = {
+      dealId,
+      dealName: deal.properties.dealname,
+      amount: deal.properties.amount,
+      associations: {
+        companies: deal.associations?.companies?.results || [],
+        contacts: deal.associations?.contacts?.results || [],
+        quotes: deal.associations?.quotes?.results || [],
+        line_items: deal.associations?.line_items?.results || []
+      }
+    };
+
+    // Se houver Quote, buscar os Line Items da Quote
+    if (result.associations.quotes.length > 0) {
+      const quoteId = result.associations.quotes[0].id;
+      const quoteUrl = `https://api.hubspot.com/crm/v3/objects/quotes/${quoteId}?associations=line_items`;
+      const quoteResp = await axios.get(quoteUrl, {
+        headers: { Authorization: `Bearer ${hubspotToken}` }
+      });
+
+      result.quoteLineItems = quoteResp.data.associations?.line_items?.results || [];
+    }
+
+    res.json(result);
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ============================================================
+// 📝 CREATE QUOTE ENDPOINT: HubSpot Deal → Sankhya Orçamento
+// ============================================================
+app.post("/hubspot/create-quote", async (req, res) => {
+  try {
+    const { dealId } = req.body;
+
+    if (!dealId) {
+      return res.status(400).json({ success: false, error: "dealId é obrigatório" });
+    }
+
+    const hubspotToken = requireEnv("HUBSPOT_ACCESS_TOKEN");
+
+    // 1. Buscar dados do Deal (apenas propriedades)
+    console.log(`[QUOTE] Buscando Deal ${dealId}...`);
+    const dealUrl = `https://api.hubspot.com/crm/v3/objects/deals/${dealId}?properties=codemp_sankhya,sankhya_codemp,amount,dealname,closedate,tipo_negociacao,dealtype,natureza_id,hubspot_owner_id`;
+    const dealResp = await axios.get(dealUrl, {
+      headers: { Authorization: `Bearer ${hubspotToken}` }
+    });
+
+    const props = dealResp.data.properties;
+
+    // 2. Extrair CodeEmp
+    const codEmpRaw = props.codemp_sankhya || props.sankhya_codemp || "1";
+    const codEmp = toInt("codEmp", codEmpRaw) || 1;
+
+
+    // 3. Extrair propriedades Sankhya do Deal
+    const codTipVendaRaw = props.tipo_negociacao;
+    const codTipVenda = toInt("codTipVenda", codTipVendaRaw) || 503;
+
+    const codTipOperRaw = props.dealtype;
+    const codTipOper = toInt("codTipOper", codTipOperRaw) || 999; // Fallback 999 = Orçamento
+
+    const codNatRaw = props.natureza_id;
+    const codNat = toInt("codNat", codNatRaw) || 101001; // Fallback para natureza padrão
+
+    console.log(`[QUOTE] Propriedades Sankhya mapeadas:`);
+    console.log(`  - CODTIPOPER: ${codTipOper} (dealtype)`);
+    console.log(`  - CODTIPVENDA: ${codTipVenda} (tipo_negociacao)`);
+    console.log(`  - CODNAT: ${codNat} (natureza_id)`);
+    console.log(`  - CODCENCUS: 101002 (hardcoded)`);
+
+    // 3. Buscar CodParc (Company) via associations API
+    const companyAssocUrl = `https://api.hubspot.com/crm/v3/objects/deals/${dealId}/associations/companies`;
+    const companyAssocResp = await axios.get(companyAssocUrl, {
+      headers: { Authorization: `Bearer ${hubspotToken}` }
+    });
+
+    const companyId = companyAssocResp.data.results?.[0]?.id;
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: "Deal não possui Company associada"
+      });
+    }
+
+    const companyResp = await axios.get(
+      `https://api.hubspot.com/crm/v3/objects/companies/${companyId}?properties=sankhya_codparc,codparc`,
+      { headers: { Authorization: `Bearer ${hubspotToken}` } }
+    );
+
+    const codParcRaw = companyResp.data.properties.sankhya_codparc || companyResp.data.properties.codparc;
+    const codParc = toInt("codParc", codParcRaw);
+
+    if (!codParc) {
+      return res.status(400).json({
+        success: false,
+        error: "Company não possui código Sankhya (sankhya_codparc ou codparc)"
+      });
+    }
+
+    // 4. Buscar Line Items (método correto via associations API)
+    console.log(`[QUOTE] Buscando Line Items do Deal ${dealId}...`);
+    const lineItemsAssocUrl = `https://api.hubspot.com/crm/v3/objects/deals/${dealId}/associations/line_items`;
+    const lineItemsAssocResp = await axios.get(lineItemsAssocUrl, {
+      headers: { Authorization: `Bearer ${hubspotToken}` }
+    });
+
+    const lineItemIds = lineItemsAssocResp.data.results?.map(r => r.id) || [];
+
+    if (lineItemIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Deal não possui Line Items associados"
+      });
+    }
+
+    console.log(`[QUOTE] Carregando detalhes de ${lineItemIds.length} Line Items...`);
+    const lineItemsResp = await axios.post(
+      `https://api.hubspot.com/crm/v3/objects/line_items/batch/read`,
+      {
+        properties: ["hs_product_id", "quantity", "price", "name", "hs_sku"],
+        inputs: lineItemIds.map(id => ({ id }))
+      },
+      { headers: { Authorization: `Bearer ${hubspotToken}` } }
+    );
+
+    const lineItems = lineItemsResp.data.results;
+
+    // 5. Mapear produtos HubSpot → Sankhya
+    const productItems = [];
+    for (const item of lineItems) {
+      const hsProductId = item.properties.hs_product_id;
+      const quantity = parseFloat(item.properties.quantity) || 0; // Allow 0 quantities
+      const price = parseFloat(item.properties.price) || 0;
+      let sku = item.properties.hs_sku;
+
+      // Se não veio SKU no Line Item, tenta buscar no objeto Product (se houver ID)
+      if (!sku && hsProductId) {
+        try {
+          const prodResp = await axios.get(
+            `https://api.hubspot.com/crm/v3/objects/products/${hsProductId}?properties=hs_sku`,
+            { headers: { Authorization: `Bearer ${hubspotToken}` } }
+          );
+          sku = prodResp.data.properties.hs_sku;
+        } catch (e) {
+          console.error(`[QUOTE] Erro ao buscar SKU do produto ${hsProductId}: ${e.message}`);
+        }
+      }
+
+      // Sanitizar SKU: extrair apenas a parte numérica (ex: "72#2" -> "72")
+      if (sku) {
+        sku = String(sku).split('#')[0].trim();
+      }
+
+      const codProd = toInt("codProd", sku);
+
+      if (!codProd) {
+        console.warn(`[QUOTE] Line Item ${item.id} (${item.properties.name}) não possui SKU/CODPROD válido: ${sku}`);
+        continue;
+      }
+
+      // Buscar unidade do produto no Sankhya
+      const prodInfoSql = `SELECT CODVOL FROM TGFPRO WHERE CODPROD = ${codProd}`;
+      const prodInfoResp = await postGatewayWithRetry({ requestBody: { sql: prodInfoSql } });
+      const codVol = prodInfoResp.data?.responseBody?.rows?.[0]?.[0] || "UN";
+
+      productItems.push({
+        codProd,
+        codVol,
+        qtdNeg: quantity,
+        vlrUnit: price,
+        vlrTot: quantity * price
+      });
+    }
+
+    if (productItems.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Nenhum produto válido encontrado nos Line Items"
+      });
+    }
+
+    // 6. Calcular totais
+    const vlrNota = productItems.reduce((sum, item) => sum + item.vlrTot, 0);
+    const dtneg = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const dtNegFormatted = new Date().toLocaleDateString('pt-BR'); // DD/MM/YYYY
+
+    // 7. Criar orçamento usando CRUD Service do Sankhya
+    console.log(`[QUOTE] Criando orçamento via CRUD Service para CODPARC=${codParc}, CODEMP=${codEmp}, VLRNOTA=${vlrNota}...`);
+
+    // Estrutura de dados para o orçamento (TGFCAB + TGFITE)
+    const orderData = {
+      cabecalho: {
+        CODEMP: codEmp,
+        CODPARC: codParc,
+        CODTIPOPER: codTipOper, // Tipo de Operação (999=Orçamento)
+        CODEMPNEGOC: codEmp,
+        CODVEND: 0,
+        TIPMOV: 'P', // Pedido
+        DTNEG: dtNegFormatted
+      },
+      itens: productItems.map((item, index) => ({
+        SEQUENCIA: index + 1,
+        CODPROD: item.codProd,
+        CODVOL: item.codVol,
+        QTDNEG: item.qtdNeg,
+        VLRUNIT: item.vlrUnit,
+        VLRTOT: item.vlrTot
+      }))
+    };
+
+    // Usar o serviço de inclusão de nota do Sankhya (módulo MGECOM)
+    const INCLUIR_NOTA_URL = `${baseUrl}/gateway/v1/mgecom/service.sbr?serviceName=CACSP.incluirNota&outputType=json`;
+
+    // Estrutura correta do payload para CACSP.incluirNota
+    const notaBody = {
+      requestBody: {
+        nota: {
+          cabecalho: {
+            NUNOTA: { "$": "" },  // Vazio para criar novo
+            CODEMP: { "$": codEmp },
+            CODPARC: { "$": codParc },
+            CODTIPOPER: { "$": codTipOper },      // Tipo de Operação: da propriedade dealtype
+            CODEMPNEGOC: { "$": codEmp },
+            CODVEND: { "$": 0 },                    // TODO: mapear hubspot_owner_id
+            TIPMOV: { "$": "P" },
+            DTNEG: { "$": dtNegFormatted },
+            CODCENCUS: { "$": 101002 },             // Centro de Custo: FIXO (COMERCIAL)
+            CODNAT: { "$": codNat },                // Natureza: da propriedade natureza_id
+            CODTIPVENDA: { "$": codTipVenda }       // Tipo de Negociação: da propriedade tipo_negociacao
+          },
+          itens: {
+            item: productItems.map((item, index) => ({
+              NUNOTA: { "$": "" },
+              SEQUENCIA: { "$": index + 1 },
+              CODEMP: { "$": codEmp },
+              CODPROD: { "$": item.codProd },
+              CODVOL: { "$": item.codVol },
+              CODLOCALORIG: { "$": 0 },   // Local de Origem: padrão
+              QTDNEG: { "$": item.qtdNeg },
+              VLRUNIT: { "$": item.vlrUnit },
+              VLRTOT: { "$": item.vlrTot }
+            }))
+          }
+        }
+      }
+    };
+
+    let token = await getAccessToken();
+    console.log(`[QUOTE] Enviando para CACSP.incluirNota: ${JSON.stringify(notaBody).substring(0, 800)}...`);
+
+    const notaResp = await axios.post(INCLUIR_NOTA_URL, notaBody, {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      timeout: 60000
+    });
+
+    console.log(`[QUOTE] Resposta CACSP.incluirNota: ${JSON.stringify(notaResp.data).substring(0, 500)}`);
+
+    // Extrair NUNOTA da resposta (formato Sankhya: {$: valor})
+    let nunotaRaw = notaResp.data?.responseBody?.pk?.NUNOTA
+      || notaResp.data?.responseBody?.NUNOTA
+      || notaResp.data?.responseBody?.nota?.NUNOTA;
+
+    // Se veio como objeto {$: valor}, extrai o valor
+    const nunota = (nunotaRaw && typeof nunotaRaw === 'object' && nunotaRaw.$)
+      ? nunotaRaw.$
+      : nunotaRaw;
+
+    if (!nunota) {
+      // Tentar buscar o último NUNOTA criado para o parceiro
+      const getNunotaSql = `SELECT MAX(NUNOTA) AS NUNOTA FROM TGFCAB WHERE CODPARC = ${codParc} AND CODTIPOPER = 999`;
+      const nunotaResp = await postGatewayWithRetry({ requestBody: { sql: getNunotaSql } });
+      const fallbackNunota = nunotaResp.data?.responseBody?.rows?.[0]?.[0];
+
+      if (!fallbackNunota) {
+        console.error(`[QUOTE] Falha ao criar orçamento. Resposta completa: ${JSON.stringify(notaResp.data)}`);
+        throw new Error(`Falha ao criar orçamento no Sankhya. Verifique os logs.`);
+      }
+
+      console.log(`[QUOTE] NUNOTA obtido via fallback: ${fallbackNunota}`);
+      return res.json({
+        success: true,
+        nunota: fallbackNunota,
+        codEmp,
+        codParc,
+        vlrNota,
+        itemCount: productItems.length,
+        message: `Orçamento ${fallbackNunota} criado com sucesso! (fallback)`
+      });
+    }
+
+    console.log(`[QUOTE] NUNOTA gerado: ${nunota}`);
+
+    // 8. Tentar atualizar Deal no HubSpot com NUNOTA (opcional)
+    console.log(`[QUOTE] Atualizando Deal ${dealId} com NUNOTA ${nunota}...`);
+    let hubspotUpdateSuccess = false;
+    try {
+      await axios.patch(
+        `https://api.hubspot.com/crm/v3/objects/deals/${dealId}`,
+        {
+          properties: {
+            sankhya_nunota: nunota.toString() // Propriedade customizada no HubSpot
+          }
+        },
+        { headers: { Authorization: `Bearer ${hubspotToken}` } }
+      );
+      hubspotUpdateSuccess = true;
+      console.log(`[QUOTE] Deal ${dealId} atualizado com NUNOTA ${nunota}`);
+    } catch (hsError) {
+      console.warn(`[QUOTE] Falha ao atualizar Deal no HubSpot (propriedade pode não existir): ${hsError.message}`);
+      // Não falhar - o orçamento foi criado com sucesso no Sankhya
+    }
+
+    // PDF só será gerado após confirmação do orçamento (quando houver rentabilidade e estoque)
+    console.log(`[QUOTE] ℹ️ PDF não gerado - orçamento precisa ser confirmado primeiro`);
+
+    res.json({
+      success: true,
+      nunota,
+      codEmp,
+      codParc,
+      vlrNota,
+      itemCount: productItems.length,
+      hubspotUpdated: hubspotUpdateSuccess,
+      message: `Orçamento ${nunota} criado com sucesso no Sankhya! Aguardando confirmação para gerar PDF.`
+    });
+
+  } catch (error) {
+    console.error("[QUOTE ERROR]", error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
+// --- PROFITABILITY CHECK ENDPOINT ---
+/**
+ * GET /sankhya/check-profitability/:nunota
+ * Retorna dados de rentabilidade de uma nota/orçamento usando o serviço nativo do Sankhya
+ */
+app.get("/sankhya/check-profitability/:nunota", async (req, res) => {
+  const { nunota } = req.params;
+
+  try {
+    console.log(`[PROFITABILITY] Checking profitability for NUNOTA ${nunota}...`);
+
+    const token = await getAccessToken();
+    const url = `${baseUrl}/gateway/v1/mge/service.sbr?serviceName=LiberacaoLimitesSP.getDadosRentabilidade&outputType=json`;
+
+    const payload = {
+      serviceName: "LiberacaoLimitesSP.getDadosRentabilidade",
+      requestBody: {
+        NUNOTA: Number(nunota)
+      }
+    };
+
+    const resp = await axios.post(url, payload, {
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json"
+      }
+    });
+
+    const data = resp.data?.responseBody;
+
+    if (!data) {
+      return res.status(404).json({
+        success: false,
+        error: "Dados de rentabilidade não encontrados"
+      });
+    }
+
+    // Parse percentages (Brazilian format "5,992%" -> 5.992)
+    const parsePercent = (str) => {
+      if (!str) return 0;
+      return parseFloat(String(str).replace(',', '.').replace('%', '')) || 0;
+    };
+
+    const profitability = {
+      nunota: Number(nunota),
+      faturamento: parseFloat(data.somaFaturamento) || 0,
+      custoMercadoriaVendida: parseFloat(data.somaCustoMercadoriaVendida) || 0,
+      gastoVariavel: parseFloat(data.somaGastoVariavel) || 0,
+      gastoFixo: parseFloat(data.somaGastoFixo) || 0,
+      lucro: parseFloat(data.somaLucro) || 0,
+      margemContribuicao: parseFloat(data.margemContrib) || 0,
+      percentLucro: parsePercent(data.percentLucro),
+      percentMC: parsePercent(data.percentMC),
+      percentCMV: parsePercent(data.percentCMV),
+      percentGV: parsePercent(data.percentGV),
+      percentGF: parsePercent(data.percentGF),
+      isRentavel: parseFloat(data.somaLucro) > 0,
+      qtdItens: parseInt(data.contItens) || 0,
+      produtosComCusto: data.produtosComCusto?.entities?.entity || null,
+      produtosSemCusto: data.produtosSemCusto?.entities?.entity || null
+    };
+
+    console.log(`[PROFITABILITY] NUNOTA ${nunota}: Lucro=${profitability.lucro}, %Lucro=${profitability.percentLucro}%, Rentável=${profitability.isRentavel}`);
+
+    res.json({
+      success: true,
+      profitability
+    });
+
+  } catch (error) {
+    console.error(`[PROFITABILITY ERROR] ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// --- QUOTE STATUS CHECK ENDPOINT ---
+/**
+ * GET /hubspot/quote-status/:dealId
+ * Retorna status do orçamento de um Deal para controle de botões dinâmicos
+ */
+app.get("/hubspot/quote-status/:dealId", async (req, res) => {
+  const { dealId } = req.params;
+
+  try {
+    console.log(`[QUOTE-STATUS] Checking quote status for Deal ${dealId}...`);
+
+    // 1. Buscar Deal no HubSpot
+    const dealResp = await axios.get(
+      `https://api.hubspot.com/crm/v3/objects/deals/${dealId}?properties=sankhya_nunota,dealname`,
+      { headers: { Authorization: `Bearer ${hubspotToken}` } }
+    );
+
+    const nunota = dealResp.data.properties?.sankhya_nunota;
+    const dealname = dealResp.data.properties?.dealname;
+
+    // Se não tem NUNOTA, ainda não tem orçamento
+    if (!nunota) {
+      return res.json({
+        success: true,
+        status: {
+          dealId,
+          dealname,
+          hasQuote: false,
+          nunota: null,
+          isConfirmed: false,
+          profitability: null,
+          buttonAction: "CREATE_QUOTE",
+          buttonLabel: "Criar Orçamento"
+        }
+      });
+    }
+
+    // 2. Verificar se nota está confirmada no Sankhya
+    const token = await getAccessToken();
+    const notaStatusSql = `SELECT STATUSNOTA, STATUSNFE, VLRNOTA FROM TGFCAB WHERE NUNOTA = ${nunota}`;
+    const notaResp = await postGatewayWithRetry({ requestBody: { sql: notaStatusSql } });
+    const notaRow = notaResp.data?.responseBody?.rows?.[0];
+
+    const statusNota = notaRow?.[0] || "P"; // P = Pendente, L = Liberada, F = Fechada
+    const vlrNota = parseFloat(notaRow?.[2]) || 0;
+    const isConfirmed = statusNota !== "P"; // Qualquer status diferente de Pendente = confirmada
+
+    // 3. Buscar rentabilidade
+    let profitability = null;
+    let isRentavel = false;
+
+    try {
+      const profResp = await axios.get(
+        `http://localhost:${PORT}/sankhya/check-profitability/${nunota}`
+      );
+      if (profResp.data?.success) {
+        profitability = profResp.data.profitability;
+        isRentavel = profitability.isRentavel;
+      }
+    } catch (e) {
+      console.warn(`[QUOTE-STATUS] Could not fetch profitability: ${e.message}`);
+    }
+
+    // 4. Determinar ação do botão
+    let buttonAction, buttonLabel;
+
+    if (!isConfirmed && isRentavel) {
+      buttonAction = "CONFIRM_QUOTE";
+      buttonLabel = "Confirmar Orçamento";
+    } else if (!isConfirmed && !isRentavel) {
+      buttonAction = "NEEDS_APPROVAL";
+      buttonLabel = "Aguardando Aprovação";
+    } else if (isConfirmed) {
+      buttonAction = "GENERATE_PDF";
+      buttonLabel = "Gerar PDF";
+    } else {
+      buttonAction = "VIEW_QUOTE";
+      buttonLabel = "Ver Orçamento";
+    }
+
+    res.json({
+      success: true,
+      status: {
+        dealId,
+        dealname,
+        hasQuote: true,
+        nunota: Number(nunota),
+        statusNota,
+        isConfirmed,
+        vlrNota,
+        profitability,
+        isRentavel,
+        buttonAction,
+        buttonLabel
+      }
+    });
+
+  } catch (error) {
+    console.error(`[QUOTE-STATUS ERROR] ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// --- QUOTE CONFIRMATION ENDPOINT ---
+/**
+ * POST /hubspot/confirm-quote
+ * Confirma um orçamento no Sankhya após validar rentabilidade
+ */
+app.post("/hubspot/confirm-quote", async (req, res) => {
+  const { dealId, nunota, forceConfirm } = req.body;
+
+  if (!dealId || !nunota) {
+    return res.status(400).json({
+      success: false,
+      error: "dealId e nunota são obrigatórios"
+    });
+  }
+
+  try {
+    console.log(`[CONFIRM-QUOTE] Confirming NUNOTA ${nunota} for Deal ${dealId}...`);
+
+    // 1. Verificar rentabilidade
+    const profResp = await axios.get(
+      `http://localhost:${PORT}/sankhya/check-profitability/${nunota}`
+    );
+
+    const profitability = profResp.data?.profitability;
+
+    if (!profitability) {
+      return res.status(400).json({
+        success: false,
+        error: "Não foi possível verificar rentabilidade"
+      });
+    }
+
+    // Se não for rentável e não forçar confirmação, bloquear
+    if (!profitability.isRentavel && !forceConfirm) {
+      return res.status(400).json({
+        success: false,
+        error: "Orçamento não é rentável (lucro negativo)",
+        profitability,
+        requiresApproval: true
+      });
+    }
+
+    // 2. Confirmar nota no Sankhya
+    // Usando o serviço CACSP.confirmarNota ou alterando STATUSNOTA diretamente
+    const token = await getAccessToken();
+
+    // Método: Atualizar STATUSNOTA para 'L' (Liberada)
+    const updateSql = `UPDATE TGFCAB SET STATUSNOTA = 'L' WHERE NUNOTA = ${nunota} AND STATUSNOTA = 'P'`;
+
+    const updateResp = await axios.post(
+      `${baseUrl}/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json`,
+      {
+        serviceName: "DbExplorerSP.executeQuery",
+        requestBody: {
+          sql: updateSql
+        }
+      },
+      {
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    console.log(`[CONFIRM-QUOTE] NUNOTA ${nunota} confirmed successfully`);
+
+    // 3. Gerar PDF automaticamente
+    let pdfResult = null;
+    try {
+      console.log(`[CONFIRM-QUOTE] Generating PDF for NUNOTA ${nunota}...`);
+      const pdfData = await generateSankhyaPDF(nunota);
+
+      console.log(`[CONFIRM-QUOTE] Uploading PDF to HubSpot...`);
+      const { fileId, url } = await uploadPDFToHubSpot(pdfData.fileName, pdfData.base64);
+
+      console.log(`[CONFIRM-QUOTE] Attaching PDF to Deal ${dealId}...`);
+      await createNoteWithPDFAttachment(dealId, fileId, nunota);
+
+      pdfResult = { success: true, fileId, url };
+      console.log(`[CONFIRM-QUOTE] ✅ PDF attached successfully!`);
+    } catch (pdfErr) {
+      console.warn(`[CONFIRM-QUOTE] ⚠️ PDF generation failed: ${pdfErr.message}`);
+      pdfResult = { success: false, error: pdfErr.message };
+    }
+
+    res.json({
+      success: true,
+      nunota,
+      dealId,
+      confirmed: true,
+      profitability,
+      pdfResult,
+      message: `Orçamento ${nunota} confirmado com sucesso!${pdfResult?.success ? ' PDF anexado ao Deal.' : ''}`
+    });
+
+  } catch (error) {
+    console.error(`[CONFIRM-QUOTE ERROR] ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// --- NEW PDF & HUBSPOT ATTACHMENT FUNCTIONS ---
+
+/**
+ * Gera um PDF no Sankhya para uma NUNOTA específica
+ */
+async function generateSankhyaPDF(nunota) {
+  const token = await getAccessToken();
+  // Usar mgecom gate (mesmo do incluirNota) e remover mgeSession da URL
+  const url = `${baseUrl}/gateway/v1/mgecom/service.sbr?serviceName=ImpressaoNotasSP.imprimeDocumentos&outputType=json`;
+
+  /* 
+    Payload identificado via HAR do Sankhya Web
+    1. imprimeDocumentos: Gera o relatório e retorna status 1
+    2. getDocumentData: Retorna o PDF em Base64
+  */
+  const fileName = `${nunota}_Orcamento`;
+  const payload = {
+    requestBody: {
+      notas: {
+        pedidoWeb: false,
+        portalCaixa: false,
+        gerarpdf: true,
+        nota: [
+          {
+            nuNota: Number(nunota),
+            tipoImp: 1,
+            impressaoDanfeSimplicado: false,
+            fileName: fileName
+          }
+        ]
+      }
+    }
+  };
+
+  console.log(`[PDF] 1. Solicitando Impressão para NUNOTA ${nunota}...`);
+  const resp1 = await axios.post(url, payload, {
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    timeout: 30000
+  });
+
+  if (resp1.data.status !== '1') {
+    throw new Error(`Erro ao gerar PDF (Status ${resp1.data.status}): ${resp1.data.statusMessage || JSON.stringify(resp1.data)}`);
+  }
+
+  // Passo 2: Buscar os dados do documento (Base64)
+  console.log(`[PDF] 2. Buscando dados do PDF...`);
+  const urlData = `${baseUrl}/gateway/v1/mgecom/service.sbr?serviceName=ImpressaoNotasSP.getDocumentData&outputType=json`;
+
+  const payloadData = {
+    requestBody: {
+      params: {
+        NUNOTA: Number(nunota),
+        FILENAME: fileName
+      }
+    }
+  };
+
+  const respData = await axios.post(urlData, payloadData, {
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    timeout: 30000
+  });
+
+  const pdfBase64 = respData.data?.responseBody?.PDF;
+
+  if (!pdfBase64) {
+    throw new Error('PDF não retornado em getDocumentData');
+  }
+
+  // Retornar objeto com base64 (limpo se tiver prefixo data:application/pdf;base64,)
+  // Sankhya retorna algo como: "data:application/pdf;base64,JVBERi..."
+  const base64Clean = pdfBase64.replace(/^data:.+;base64,/, '');
+
+  return {
+    success: true,
+    fileName: `${fileName}.pdf`,
+    base64: base64Clean
+  };
+}
+
+/**
+ * Upload de PDF para o HubSpot Files API
+ */
+async function uploadPDFToHubSpot(fileName, base64Data) {
+  const hubspotToken = requireEnv('HUBSPOT_ACCESS_TOKEN');
+  const buffer = Buffer.from(base64Data, 'base64');
+
+  // HubSpot Files API requer multipart/form-data
+  const FormData = (await import('form-data')).default;
+  const form = new FormData();
+
+  form.append('file', buffer, {
+    filename: fileName,
+    contentType: 'application/pdf'
+  });
+
+  form.append('options', JSON.stringify({
+    access: 'PRIVATE',
+    overwrite: false
+  }));
+
+  form.append('folderPath', '/Orcamentos');
+
+  console.log(`[HUBSPOT] Uploading PDF: ${fileName}...`);
+
+  const response = await axios.post(
+    'https://api.hubapi.com/files/v3/files',
+    form,
+    {
+      headers: {
+        ...form.getHeaders(),
+        'Authorization': `Bearer ${hubspotToken}`
+      },
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity
+    }
+  );
+
+  console.log(`[HUBSPOT] Upload concluído. File ID: ${response.data.id}`);
+
+  return {
+    fileId: response.data.id,
+    url: response.data.url
+  };
+}
+
+/**
+ * Cria uma nota no HubSpot com o PDF anexado e associa ao Deal
+ */
+async function createNoteWithPDFAttachment(dealId, fileId, nunota) {
+  const hubspotToken = requireEnv('HUBSPOT_ACCESS_TOKEN');
+
+  const payload = {
+    properties: {
+      hs_timestamp: new Date().toISOString(),
+      hs_note_body: `Orçamento Sankhya #${nunota} anexado automaticamente.`,
+      hs_attachment_ids: fileId.toString()
+    },
+    associations: [
+      {
+        to: { id: dealId },
+        types: [{
+          associationCategory: 'HUBSPOT_DEFINED',
+          associationTypeId: 214 // Note to Deal
+        }]
+      }
+    ]
+  };
+
+  console.log(`[HUBSPOT] Criando nota com anexo no Deal ${dealId}...`);
+
+  const response = await axios.post(
+    'https://api.hubapi.com/crm/v3/objects/notes',
+    payload,
+    {
+      headers: {
+        'Authorization': `Bearer ${hubspotToken}`,
+        'Content-Type': 'application/json'
+      }
+    }
+  );
+
+  console.log(`[HUBSPOT] Nota criada com sucesso. Note ID: ${response.data.id}`);
+
+  return response.data.id;
+}
+
+
+/**
+ * Gera PDF de um orçamento Sankhya (para testes)
+ */
+app.get("/sankhya/generate-pdf/:nunota", async (req, res) => {
+  try {
+    const { nunota } = req.params;
+    const result = await generateSankhyaPDF(nunota);
+
+    // Não retornar o base64 inteiro no log/response para não travar
+    res.json({
+      success: true,
+      fileName: result.fileName,
+      base64Length: result.base64 ? result.base64.length : 0,
+      preview: result.base64 ? result.base64.substring(0, 50) + '...' : null
+    });
+  } catch (error) {
+    console.error(`[PDF Generation Error] ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Fluxo completo: Gera PDF, faz upload no HubSpot e anexa ao Deal
+ */
+app.post("/sankhya/pdf/attach", async (req, res) => {
+  try {
+    const { dealId, nunota } = req.body;
+
+    console.log(`\n[E2E TEST] Iniciando fluxo completo para Deal ${dealId}, NUNOTA ${nunota}`);
+
+    // 1. Gerar PDF do Sankhya
+    console.log(`[E2E TEST] Passo 1/3: Gerando PDF...`);
+    const pdfData = await generateSankhyaPDF(nunota);
+
+    // 2. Upload para HubSpot
+    console.log(`[E2E TEST] Passo 2/3: Fazer upload no HubSpot...`);
+    const { fileId, url } = await uploadPDFToHubSpot(pdfData.fileName, pdfData.base64);
+
+    // 3. Criar nota com anexo associada ao Deal
+    console.log(`[E2E TEST] Passo 3/3: Criando nota no Deal...`);
+    const noteId = await createNoteWithPDFAttachment(dealId, fileId, nunota);
+
+    console.log(`[E2E TEST] ✅ Fluxo concluído com sucesso!\n`);
+
+    res.json({
+      success: true,
+      dealId,
+      nunota,
+      fileId,
+      fileUrl: url,
+      noteId,
+      message: `PDF do orçamento ${nunota} anexado ao Deal ${dealId} com sucesso!`
+    });
+  } catch (error) {
+    console.error(`[E2E TEST ERROR] ${error.message}`, error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

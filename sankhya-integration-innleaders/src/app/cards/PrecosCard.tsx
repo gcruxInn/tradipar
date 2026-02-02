@@ -20,6 +20,8 @@ import {
     Select,
     Modal,
     ModalBody,
+    Dropdown,
+    Icon,
 } from "@hubspot/ui-extensions";
 
 interface ItemData {
@@ -29,6 +31,8 @@ interface ItemData {
     prices: { pv1: number | null; pv2: number | null; pv3: number | null };
     stock: number;
     stockContext?: string;
+    stockOther?: number;
+    stockOtherContext?: string;
     currentPrice?: number | null;
 }
 
@@ -74,6 +78,12 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
     const [converting, setConverting] = useState(false);
     const [convertError, setConvertError] = useState<string | null>(null);
     const [convertSuccess, setConvertSuccess] = useState(false);
+
+    // Quote Workflow State
+    const [quoteStatus, setQuoteStatus] = useState<any>(null);
+    const [quoteLoading, setQuoteLoading] = useState(false);
+    const [quoteError, setQuoteError] = useState<string | null>(null);
+    const [quoteSuccess, setQuoteSuccess] = useState<string | null>(null);
 
     // Custom Price State (for individual item price override)
     const [customPriceItemId, setCustomPriceItemId] = useState<string | null>(null);
@@ -191,6 +201,81 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
             setConverting(false);
         }
     };
+
+    // Fetch Quote Status from backend
+    const fetchQuoteStatus = async () => {
+        try {
+            const response = await hubspot.fetch(
+                `https://api.gcrux.com/hubspot/quote-status/${context.crm.objectId}`,
+                { method: "GET" }
+            );
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    setQuoteStatus(result.status);
+                }
+            }
+        } catch (err) {
+            console.error("Failed to fetch quote status:", err);
+        }
+    };
+
+    // Handle Quote Actions (Create / Confirm / Generate PDF)
+    const handleQuoteAction = async () => {
+        setQuoteLoading(true);
+        setQuoteError(null);
+        setQuoteSuccess(null);
+
+        try {
+            let endpoint = "";
+            let body: any = {};
+
+            if (!quoteStatus?.hasQuote) {
+                // CREATE QUOTE
+                endpoint = "https://api.gcrux.com/hubspot/create-quote";
+                body = { dealId: context.crm.objectId };
+            } else if (quoteStatus?.buttonAction === "CONFIRM_QUOTE") {
+                // CONFIRM QUOTE
+                endpoint = "https://api.gcrux.com/hubspot/confirm-quote";
+                body = { dealId: context.crm.objectId, nunota: quoteStatus.nunota };
+            } else if (quoteStatus?.buttonAction === "GENERATE_PDF") {
+                // GENERATE PDF
+                endpoint = "https://api.gcrux.com/hubspot/confirm-quote";
+                body = { dealId: context.crm.objectId, nunota: quoteStatus.nunota, forceConfirm: true };
+            } else {
+                throw new Error("Ação não reconhecida");
+            }
+
+            const response = await hubspot.fetch(endpoint, {
+                method: "POST",
+                body
+            });
+
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+                throw new Error(result.error || "Erro ao processar orçamento");
+            }
+
+            setQuoteSuccess(result.message || "Operação realizada com sucesso!");
+            // Refresh quote status
+            await fetchQuoteStatus();
+            setTimeout(() => setQuoteSuccess(null), 5000);
+
+        } catch (err: any) {
+            setQuoteError(err.message);
+        } finally {
+            setQuoteLoading(false);
+        }
+    };
+
+
+    // Fetch quote status on mount
+    useEffect(() => {
+        if (context.crm.objectId) {
+            fetchQuoteStatus();
+        }
+    }, [context.crm.objectId]);
 
     const formatCurrency = (value: number | null): string => {
         if (value === null || value === undefined) return "---";
@@ -403,7 +488,7 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
 
     return (
         <Flex direction="column" gap="md">
-            {/* HEADER: Status & Refresh */}
+            {/* HEADER: Status & Actions */}
             <Flex align="center" justify="between">
                 <Flex align="center" gap="sm">
                     <Text format={{ fontWeight: "bold" }}>Status:</Text>
@@ -415,7 +500,76 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
                         <Text>{data?.currentStage}</Text>
                     )}
                 </Flex>
-                <Button onClick={fetchPrices} variant="secondary" size="sm">↻ Atualizar</Button>
+                <Flex gap="xs" align="center">
+                    {/* Profitability Icon Button */}
+                    {quoteStatus?.hasQuote && quoteStatus?.profitability && (
+                        <Button
+                            variant="transparent"
+                            size="sm"
+                            overlay={
+                                <Modal title="📊 Rentabilidade" id="profitability-modal">
+                                    <ModalBody>
+                                        <Flex direction="column" gap="xs">
+                                            <Flex justify="between">
+                                                <Text>Faturamento:</Text>
+                                                <Text format={{ fontWeight: "bold" }}>
+                                                    {formatCurrency(quoteStatus.profitability.faturamento)}
+                                                </Text>
+                                            </Flex>
+                                            <Flex justify="between">
+                                                <Text>Custo Mercadoria (CMV):</Text>
+                                                <Text>{formatCurrency(quoteStatus.profitability.custoMercadoriaVendida)} ({quoteStatus.profitability.percentCMV?.toFixed(1)}%)</Text>
+                                            </Flex>
+                                            <Flex justify="between">
+                                                <Text>Gastos Variáveis:</Text>
+                                                <Text>{formatCurrency(quoteStatus.profitability.gastoVariavel)} ({quoteStatus.profitability.percentGV?.toFixed(1)}%)</Text>
+                                            </Flex>
+                                            <Flex justify="between">
+                                                <Text>Gastos Fixos:</Text>
+                                                <Text>{formatCurrency(quoteStatus.profitability.gastoFixo)} ({quoteStatus.profitability.percentGF?.toFixed(1)}%)</Text>
+                                            </Flex>
+                                            <Divider />
+                                            <Flex justify="between">
+                                                <Text>Margem Contribuição:</Text>
+                                                <Text format={{ fontWeight: "bold" }}>
+                                                    {formatCurrency(quoteStatus.profitability.margemContribuicao)} ({quoteStatus.profitability.percentMC?.toFixed(1)}%)
+                                                </Text>
+                                            </Flex>
+                                            <Flex justify="between" align="center">
+                                                <Text format={{ fontWeight: "bold" }}>LUCRO:</Text>
+                                                <Tag variant={quoteStatus.isRentavel ? "success" : "error"}>
+                                                    {formatCurrency(quoteStatus.profitability.lucro)} ({quoteStatus.profitability.percentLucro?.toFixed(2)}%)
+                                                </Tag>
+                                            </Flex>
+                                        </Flex>
+                                    </ModalBody>
+                                </Modal>
+                            }
+                        >
+                            📊
+                        </Button>
+                    )}
+                    {/* Actions Dropdown */}
+                    <Dropdown
+                        buttonText=""
+                        variant="transparent"
+                        buttonSize="sm"
+                    >
+                        <Dropdown.ButtonItem onClick={() => fetchPrices()}>
+                            ↻ Atualizar Card
+                        </Dropdown.ButtonItem>
+                        <Dropdown.ButtonItem onClick={() => fetchQuoteStatus()}>
+                            🔄 Atualizar Status Orçamento
+                        </Dropdown.ButtonItem>
+                        {quoteStatus?.hasQuote && (
+                            <Dropdown.ButtonItem onClick={() => {
+                                window.open(`https://snkbrt01502.ativy.com/mge/nota/${quoteStatus.nunota}`, '_blank');
+                            }}>
+                                📄 Abrir no Sankhya
+                            </Dropdown.ButtonItem>
+                        )}
+                    </Dropdown>
+                </Flex>
             </Flex>
             <Divider />
 
@@ -464,7 +618,7 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
                         <TableRow>
                             <TableCell width={120}>Qtd</TableCell>
                             <TableCell>Produto</TableCell>
-                            <TableCell>Estoque</TableCell>
+                            <TableCell>Qtd / Disp</TableCell>
                             <TableCell>Aplicar Preço</TableCell>
                         </TableRow>
                     </TableHead>
@@ -490,9 +644,29 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
                                     </Flex>
                                 </TableCell>
                                 <TableCell>
-                                    <Tag variant={item.stock < item.quantity ? "error" : "success"}>
-                                        {item.stock} / {item.quantity}
-                                    </Tag>
+                                    <Flex direction="row" gap="sm" align="center">
+                                        {/* Selected Company Stock */}
+                                        <Flex direction="column" gap="xs">
+                                            <Tag variant={item.stock < item.quantity ? "error" : "success"}>
+                                                {item.quantity} / {item.stock}
+                                            </Tag>
+                                            <Text variant="microcopy" format={{ fontWeight: "bold" }}>
+                                                {item.stockContext || "Empresa"}
+                                            </Text>
+                                        </Flex>
+
+                                        {/* Other Company Stock (informational) */}
+                                        {item.stockOther !== undefined && (
+                                            <Flex direction="column" gap="xs">
+                                                <Tag variant="info">
+                                                    {item.stockOther} un
+                                                </Tag>
+                                                <Text variant="microcopy" inline={true}>
+                                                    {item.stockOtherContext || "Outra Unidade"}
+                                                </Text>
+                                            </Flex>
+                                        )}
+                                    </Flex>
                                 </TableCell>
                                 <TableCell>
                                     <Flex direction="column" gap="xs">
@@ -501,9 +675,9 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
                                             name={`pv-${item.id}`}
                                             value={getSelectedPV(item)}
                                             options={[
-                                                { label: `PV1 ${formatCurrency((item.prices.pv1 || 0) * item.quantity)}`, value: "pv1" },
-                                                { label: `PV2 ${formatCurrency((item.prices.pv2 || 0) * item.quantity)}`, value: "pv2" },
-                                                { label: `PV3 ${formatCurrency((item.prices.pv3 || 0) * item.quantity)}`, value: "pv3" },
+                                                { label: `PV1: ${formatCurrency(item.prices.pv1)} /un`, value: "pv1" },
+                                                { label: `PV2: ${formatCurrency(item.prices.pv2)} /un`, value: "pv2" },
+                                                { label: `PV3: ${formatCurrency(item.prices.pv3)} /un`, value: "pv3" },
                                             ]}
                                             onChange={(val) => {
                                                 const prices = item.prices;
@@ -620,6 +794,33 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
 
             <Divider />
 
+            {/* QUOTE WORKFLOW SECTION */}
+            <Flex direction="column" gap="sm">
+                <Text format={{ fontWeight: "bold" }}>Orçamento Sankhya</Text>
+
+                {quoteStatus?.hasQuote && (
+                    <Flex gap="sm" align="center" wrap="wrap">
+                        <Tag variant="info">NUNOTA: {quoteStatus.nunota}</Tag>
+                        <Tag variant={quoteStatus.isConfirmed ? "success" : "warning"}>
+                            {quoteStatus.isConfirmed ? "Confirmado" : "Pendente"}
+                        </Tag>
+                    </Flex>
+                )}
+
+                {quoteError && <Alert title="Erro" variant="error">{quoteError}</Alert>}
+                {quoteSuccess && <Alert title="Sucesso" variant="success">{quoteSuccess}</Alert>}
+
+                <Button
+                    variant={quoteStatus?.hasQuote ? "secondary" : "primary"}
+                    onClick={handleQuoteAction}
+                    disabled={quoteLoading || quoteStatus?.buttonAction === "NEEDS_APPROVAL"}
+                >
+                    {quoteLoading ? "Processando..." : (quoteStatus?.buttonLabel || "Criar Orçamento")}
+                </Button>
+            </Flex>
+
+            <Divider />
+
             {/* ERROR HANDLING FOR CONVERSION */}
             {convertError && <Alert title="Erro" variant="error">{convertError}</Alert>}
             {convertSuccess && <Alert title="Sucesso" variant="success">Pedido gerado!</Alert>}
@@ -631,6 +832,7 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
             >
                 {converting ? "Gerando Pedido..." : "Faturar (Gerar Pedido)"}
             </Button>
+
 
         </Flex >
     );
