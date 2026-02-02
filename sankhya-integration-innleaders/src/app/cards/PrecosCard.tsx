@@ -500,76 +500,26 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
                         <Text>{data?.currentStage}</Text>
                     )}
                 </Flex>
-                <Flex gap="xs" align="center">
-                    {/* Profitability Icon Button */}
-                    {quoteStatus?.hasQuote && quoteStatus?.profitability && (
-                        <Button
-                            variant="transparent"
-                            size="sm"
-                            overlay={
-                                <Modal title="📊 Rentabilidade" id="profitability-modal">
-                                    <ModalBody>
-                                        <Flex direction="column" gap="xs">
-                                            <Flex justify="between">
-                                                <Text>Faturamento:</Text>
-                                                <Text format={{ fontWeight: "bold" }}>
-                                                    {formatCurrency(quoteStatus.profitability.faturamento)}
-                                                </Text>
-                                            </Flex>
-                                            <Flex justify="between">
-                                                <Text>Custo Mercadoria (CMV):</Text>
-                                                <Text>{formatCurrency(quoteStatus.profitability.custoMercadoriaVendida)} ({quoteStatus.profitability.percentCMV?.toFixed(1)}%)</Text>
-                                            </Flex>
-                                            <Flex justify="between">
-                                                <Text>Gastos Variáveis:</Text>
-                                                <Text>{formatCurrency(quoteStatus.profitability.gastoVariavel)} ({quoteStatus.profitability.percentGV?.toFixed(1)}%)</Text>
-                                            </Flex>
-                                            <Flex justify="between">
-                                                <Text>Gastos Fixos:</Text>
-                                                <Text>{formatCurrency(quoteStatus.profitability.gastoFixo)} ({quoteStatus.profitability.percentGF?.toFixed(1)}%)</Text>
-                                            </Flex>
-                                            <Divider />
-                                            <Flex justify="between">
-                                                <Text>Margem Contribuição:</Text>
-                                                <Text format={{ fontWeight: "bold" }}>
-                                                    {formatCurrency(quoteStatus.profitability.margemContribuicao)} ({quoteStatus.profitability.percentMC?.toFixed(1)}%)
-                                                </Text>
-                                            </Flex>
-                                            <Flex justify="between" align="center">
-                                                <Text format={{ fontWeight: "bold" }}>LUCRO:</Text>
-                                                <Tag variant={quoteStatus.isRentavel ? "success" : "error"}>
-                                                    {formatCurrency(quoteStatus.profitability.lucro)} ({quoteStatus.profitability.percentLucro?.toFixed(2)}%)
-                                                </Tag>
-                                            </Flex>
-                                        </Flex>
-                                    </ModalBody>
-                                </Modal>
-                            }
-                        >
-                            📊
-                        </Button>
+                {/* Actions Dropdown - Far Right */}
+                <Dropdown
+                    buttonText=""
+                    variant="transparent"
+                    buttonSize="sm"
+                >
+                    <Dropdown.ButtonItem onClick={() => fetchPrices()}>
+                        ↻ Atualizar Card
+                    </Dropdown.ButtonItem>
+                    <Dropdown.ButtonItem onClick={() => fetchQuoteStatus()}>
+                        🔄 Atualizar Status Orçamento
+                    </Dropdown.ButtonItem>
+                    {quoteStatus?.hasQuote && (
+                        <Dropdown.ButtonItem onClick={() => {
+                            window.open(`https://snkbrt01502.ativy.com/mge/nota/${quoteStatus.nunota}`, '_blank');
+                        }}>
+                            📄 Abrir no Sankhya
+                        </Dropdown.ButtonItem>
                     )}
-                    {/* Actions Dropdown */}
-                    <Dropdown
-                        buttonText=""
-                        variant="transparent"
-                        buttonSize="sm"
-                    >
-                        <Dropdown.ButtonItem onClick={() => fetchPrices()}>
-                            ↻ Atualizar Card
-                        </Dropdown.ButtonItem>
-                        <Dropdown.ButtonItem onClick={() => fetchQuoteStatus()}>
-                            🔄 Atualizar Status Orçamento
-                        </Dropdown.ButtonItem>
-                        {quoteStatus?.hasQuote && (
-                            <Dropdown.ButtonItem onClick={() => {
-                                window.open(`https://snkbrt01502.ativy.com/mge/nota/${quoteStatus.nunota}`, '_blank');
-                            }}>
-                                📄 Abrir no Sankhya
-                            </Dropdown.ButtonItem>
-                        )}
-                    </Dropdown>
-                </Flex>
+                </Dropdown>
             </Flex>
             <Divider />
 
@@ -643,16 +593,13 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
                                         )}
                                     </Flex>
                                 </TableCell>
-                                <TableCell>
+                                <TableCell width={210}>
                                     <Flex direction="row" gap="sm" align="center">
                                         {/* Selected Company Stock */}
                                         <Flex direction="column" gap="xs">
                                             <Tag variant={item.stock < item.quantity ? "error" : "success"}>
                                                 {item.quantity} / {item.stock}
                                             </Tag>
-                                            <Text variant="microcopy" format={{ fontWeight: "bold" }}>
-                                                {item.stockContext || "Empresa"}
-                                            </Text>
                                         </Flex>
 
                                         {/* Other Company Stock (informational) */}
@@ -661,9 +608,6 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
                                                 <Tag variant="info">
                                                     {item.stockOther} un
                                                 </Tag>
-                                                <Text variant="microcopy" inline={true}>
-                                                    {item.stockOtherContext || "Outra Unidade"}
-                                                </Text>
                                             </Flex>
                                         )}
                                     </Flex>
@@ -785,11 +729,59 @@ const PrecosCard = ({ context }: PrecosCardProps) => {
                 </Flex>
             </Accordion>
 
-            {hasStockIssue && (
-                <Alert title="Corte de Estoque" variant="error">
-                    Há itens com estoque insuficiente para atender a quantidade solicitada.
-                </Alert>
+            {/* RENTABILIDADE ACCORDION */}
+            {quoteStatus?.hasQuote && (
+                <Accordion
+                    title="📊 Ver Rentabilidade"
+                    defaultOpen={false}
+                >
+                    {quoteStatus?.profitability ? (
+                        <Flex direction="column" gap="xs">
+                            <Flex justify="between">
+                                <Text>Faturamento:</Text>
+                                <Text format={{ fontWeight: "bold" }}>
+                                    {formatCurrency(quoteStatus.profitability.faturamento)}
+                                </Text>
+                            </Flex>
+                            <Flex justify="between">
+                                <Text>Custo Mercadoria (CMV):</Text>
+                                <Text>{formatCurrency(quoteStatus.profitability.custoMercadoriaVendida)} ({quoteStatus.profitability.percentCMV?.toFixed(1)}%)</Text>
+                            </Flex>
+                            <Flex justify="between">
+                                <Text>Gastos Variáveis:</Text>
+                                <Text>{formatCurrency(quoteStatus.profitability.gastoVariavel)} ({quoteStatus.profitability.percentGV?.toFixed(1)}%)</Text>
+                            </Flex>
+                            <Flex justify="between">
+                                <Text>Gastos Fixos:</Text>
+                                <Text>{formatCurrency(quoteStatus.profitability.gastoFixo)} ({quoteStatus.profitability.percentGF?.toFixed(1)}%)</Text>
+                            </Flex>
+                            <Divider />
+                            <Flex justify="between">
+                                <Text>Margem Contribuição:</Text>
+                                <Text format={{ fontWeight: "bold" }}>
+                                    {formatCurrency(quoteStatus.profitability.margemContribuicao)} ({quoteStatus.profitability.percentMC?.toFixed(1)}%)
+                                </Text>
+                            </Flex>
+                            <Flex justify="between" align="center">
+                                <Text format={{ fontWeight: "bold" }}>LUCRO:</Text>
+                                <Tag variant={quoteStatus.isRentavel ? "success" : "error"}>
+                                    {formatCurrency(quoteStatus.profitability.lucro)} ({quoteStatus.profitability.percentLucro?.toFixed(2)}%)
+                                </Tag>
+                            </Flex>
+                        </Flex>
+                    ) : (
+                        <Text>Carregando dados de rentabilidade...</Text>
+                    )}
+                </Accordion>
             )}
+
+            {
+                hasStockIssue && (
+                    <Alert title="Corte de Estoque" variant="error">
+                        Há itens com estoque insuficiente para atender a quantidade solicitada.
+                    </Alert>
+                )
+            }
 
 
             <Divider />
