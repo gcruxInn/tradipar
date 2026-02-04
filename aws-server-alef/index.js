@@ -1,25 +1,28 @@
-import express from "express";
+﻿import express from "express";
 import axios from "axios";
 import dotenv from "dotenv";
+import bodyParser from "body-parser";
 import { getAccessToken, invalidateToken } from "./sankhyaAuth.js";
 
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+const PORT = process.env.PORT || 3005;
 
-// Mapeamento de Status do HubSpot (Internal ID -> Label Amigável)
+app.use(bodyParser.json());
+
+// Mapeamento de Status do HubSpot (Internal ID -> Label AmigÃ¡vel)
 const DEAL_STAGE_MAP = {
-  "appointmentscheduled": "Agendado / Negociação",
-  "decisionmakerboughtin": "Aguardando Liberação",
+  "appointmentscheduled": "Agendado / NegociaÃ§Ã£o",
+  "decisionmakerboughtin": "Aguardando LiberaÃ§Ã£o",
   "contractsent": "Aguardando Assinatura",
   "closedwon": "Fechado Ganho",
   "closedlost": "Perdido",
   "presentationscheduled": "Pedido Gerado"
 };
 
-// CONFIGURAÇÕES DE ESTÁGIOS (HUBSPOT INTERNAL IDS)
-const STAGE_AGUARDANDO_LIBERACAO = "decisionmakerboughtin"; // Tomador de decisão envolvido
+// CONFIGURAÃ‡Ã•ES DE ESTÃGIOS (HUBSPOT INTERNAL IDS)
+const STAGE_AGUARDANDO_LIBERACAO = "decisionmakerboughtin"; // Tomador de decisÃ£o envolvido
 const STAGE_PEDIDO = "presentationscheduled"; // Pagamento (Gatilho B2B)
 
 // SCAN DE PROPRIEDADES UTILIZADAS:
@@ -30,7 +33,7 @@ const STAGE_PEDIDO = "presentationscheduled"; // Pagamento (Gatilho B2B)
 
 function requireEnv(name) {
   const v = process.env[name];
-  if (!v) throw new Error(`Variável de ambiente ausente: ${name}`);
+  if (!v) throw new Error(`VariÃ¡vel de ambiente ausente: ${name}`);
   return v;
 }
 
@@ -38,7 +41,7 @@ function toInt(name, value) {
   if (value === null || value === undefined || value === "" || value === "undefined") return null;
   const n = Number(value);
   if (!Number.isFinite(n) || !Number.isInteger(n)) {
-    throw new Error(`${name} inválido (precisa ser inteiro): ${value}`);
+    throw new Error(`${name} invÃ¡lido (precisa ser inteiro): ${value}`);
   }
   return n;
 }
@@ -59,7 +62,7 @@ async function getEmpresaNome(codEmp) {
  * Discovery Chain: Resolve Vendedor, Parceiro, Produto e Quote
  */
 async function getDealSankhyaContext(objectId, token) {
-  const hsUrl = `https://api.hubspot.com/crm/v3/objects/deals/${objectId}?state=true&associations=companies,contacts,quotes,line_items&properties=codemp_sankhya,sankhya_codemp,amount,codigo_vendedor_sankhya,hubspot_owner_id,ordem_de_compra_anexo,dealstage`;
+  const hsUrl = `https://api.hubspot.com/crm/v3/objects/deals/${objectId}?state=true&associations=companies,contacts,quotes,line_items&properties=codemp_sankhya,sankhya_codemp,amount,codigo_vendedor_sankhya,hubspot_owner_id,ordem_de_compra_anexo,dealstage,orcamento_sankhya`;
   const hsResponse = await axios.get(hsUrl, { headers: { Authorization: `Bearer ${token}` } });
   const deal = hsResponse.data;
   const props = deal.properties;
@@ -101,23 +104,34 @@ async function getDealSankhyaContext(objectId, token) {
 
   // 4. Multi-Item Discovery
   const items = [];
-  // Fallback para 'line items' (com espaço) que as vezes o HubSpot retorna
-  const rawLineItems = deal.associations?.line_items?.results || deal.associations?.["line items"]?.results || [];
-  const lineItemIds = rawLineItems.map(r => r.id);
 
-  console.log(`[DEBUG] Associations Keys: ${deal.associations ? Object.keys(deal.associations).join(',') : 'None'}`);
+  // Debug das associações para entender o que o HubSpot está retornando
+  const assocKeys = deal.associations ? Object.keys(deal.associations) : [];
+  console.log(`[DISCOVERY] Deal associations keys: ${assocKeys.join(', ')}`);
+
+  // HubSpot can return 'line_items' or 'line items' (with space) depending on the API version/context
+  const rawLineItems = deal.associations?.line_items?.results ||
+    deal.associations?.['line items']?.results ||
+    deal.associations?.lineitems?.results || [];
+
+  const lineItemIds = rawLineItems.map(r => r.id);
 
   if (lineItemIds.length > 0) {
     // Fetch details in batches or parallel
     await Promise.all(lineItemIds.map(async (id) => {
       try {
-        const resp = await axios.get(`https://api.hubspot.com/crm/v3/objects/line_items/${id}?properties=sankhya_codprod,codprod,hs_product_id,quantity,name,price`, { headers: { Authorization: `Bearer ${token}` } });
+        const itemUrl = `https://api.hubspot.com/crm/v3/objects/line_items/${id}?properties=sankhya_codprod,codprod,hs_product_id,quantity,name,price,hs_sku`;
+        const resp = await axios.get(itemUrl, { headers: { Authorization: `Bearer ${token}` } });
         const lp = resp.data.properties;
-        let codProd = lp.sankhya_codprod || lp.codprod;
+
+
+        // Tentamos pegar o código do produto de múltiplas propriedades comuns
+        let codProd = lp.sankhya_codprod || lp.codprod || lp.hs_sku;
 
         if (!codProd && lp.hs_product_id) {
-          const pResp = await axios.get(`https://api.hubspot.com/crm/v3/objects/products/${lp.hs_product_id}?properties=sankhya_codprod,codprod`, { headers: { Authorization: `Bearer ${token}` } });
-          codProd = pResp.data.properties.sankhya_codprod || pResp.data.properties.codprod;
+          const pResp = await axios.get(`https://api.hubspot.com/crm/v3/objects/products/${lp.hs_product_id}?properties=sankhya_codprod,codprod,hs_sku`, { headers: { Authorization: `Bearer ${token}` } });
+          const pp = pResp.data.properties;
+          codProd = pp.sankhya_codprod || pp.codprod || pp.hs_sku;
         }
 
         if (codProd) {
@@ -128,12 +142,17 @@ async function getDealSankhyaContext(objectId, token) {
             quantity: Number(lp.quantity || 0),
             currentPrice: lp.price ? Number(lp.price) : null
           });
+        } else {
+          console.warn(`[DISCOVERY] Item ${id} não possui CODPROD definido (sankhya_codprod, codprod ou hs_sku).`);
         }
-      } catch (e) { console.warn(`Erro ao buscar item ${id}:`, e.message); }
+      } catch (e) {
+        console.error(`[DISCOVERY] Erro ao buscar detalhes do item ${id}:`, e.message);
+      }
     }));
   }
+  console.log(`[DISCOVERY] Items fully processed: ${items.length}`);
 
-  // 5. Quote Discovery (Lógica: Última modificada, não expirada)
+  // 5. Quote Discovery (LÃ³gica: Ãšltima modificada, nÃ£o expirada)
   let activeQuote = null;
   const quotes = deal.associations?.quotes?.results || [];
   if (quotes.length > 0) {
@@ -150,16 +169,55 @@ async function getDealSankhyaContext(objectId, token) {
     }
   }
 
-  console.log(`[DISCOVERY] Raw Data: Deal=${objectId}, Emp=${codEmp}, Parc=${codParcRaw}, Items=${items.length}, Quote=${activeQuote?.id || 'Nenhuma'}`);
+  // 4.1. Enrich Items with Sankhya Data (CONTROLE, PERCLUCRO)
+  if (props.orcamento_sankhya && items.length > 0) {
+    try {
+      const nunotaEnrich = props.orcamento_sankhya;
+      console.log(`[DISCOVERY] Enriching items for NUNOTA ${nunotaEnrich}...`);
+      const sqlItens = `SELECT CODPROD, CONTROLE, PERCLUCRO FROM TGFITE WHERE NUNOTA = ${nunotaEnrich}`;
+      const tokenSankhya = await getAccessToken();
+      const queryResp = await axios.post(`${baseUrl}/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json`, {
+        serviceName: "DbExplorerSP.executeQuery",
+        requestBody: { sql: sqlItens }
+      }, { headers: { Authorization: `Bearer ${tokenSankhya}` } });
+
+      const rowData = queryResp.data?.responseBody?.rows;
+      if (rowData && rowData.length > 0) {
+        // Map rows for faster lookup
+        const sankhyaMap = {};
+        rowData.forEach(row => {
+          const cp = row[0]; // CODPROD
+          sankhyaMap[cp] = {
+            controle: row[1],
+            profitability: parseFloat(String(row[2]).replace(',', '.')) || 0
+          };
+        });
+
+        // Update items
+        items.forEach(item => {
+          if (sankhyaMap[item.codProd]) {
+            item.sankhyaControle = sankhyaMap[item.codProd].controle;
+            item.sankhyaProfitability = sankhyaMap[item.codProd].profitability;
+          }
+        });
+      }
+    } catch (e) {
+      console.warn("[DISCOVERY] Erro ao enriquecer itens via TGFITE:", e.message);
+    }
+  }
+
+  console.log(`[DISCOVERY] Raw Data: Deal=${objectId}, Emp=${codEmp}, Parc=${codParcRaw}, Items=${items.length}, QuoteAssoc=${activeQuote?.id || 'Nenhuma'}, PropOrcamento=${props.orcamento_sankhya || 'Nenhum'}`);
+  console.log(`[DISCOVERY] Final Context: CodParc=${codParcRaw}, CodEmp=${codEmp}, Items=${items.length}, nunota=${props.orcamento_sankhya}`);
 
   return {
-    deal,
-    props,
-    codEmp,
+    objectId,
     codParc: toInt("codParc", codParcRaw),
-    items, // Array of { name, codProd, quantity }
+    codEmp,
+    codVendedor,
+    items,
     activeQuote,
-    codVendedor
+    nunota: props.orcamento_sankhya,
+    props
   };
 }
 
@@ -173,7 +231,7 @@ async function postGatewayWithRetry(body) {
     if (response.data && response.data.status === "3") {
       invalidateToken();
       token = await getAccessToken(); // O lock em getAccessToken silencia os redundantes
-      console.log("[AUTH] Sessão renovada com sucesso.");
+      console.log("[AUTH] SessÃ£o renovada com sucesso.");
       return await axios.post(GATEWAY_EXECUTE_QUERY_URL, body, { headers: { Authorization: `Bearer ${token}` }, timeout: 20000 });
     }
     return response;
@@ -325,7 +383,7 @@ async function consultaEstoque(codProd, codEmp) {
 
     if (Array.isArray(rb?.rows) && rb.rows.length > 0) {
       const row = rb.rows[0];
-      // DbExplorer retorna array de valores. Se for SELECT SUM... o valor está no índice 0
+      // DbExplorer retorna array de valores. Se for SELECT SUM... o valor estÃ¡ no Ã­ndice 0
       const val = Array.isArray(row) ? row[0] : row;
       return val != null ? Number(val) : 0;
     }
@@ -411,7 +469,7 @@ app.post("/sankhya/stock-all-units", async (req, res) => {
   if (!Array.isArray(codProds) || codProds.length === 0) {
     return res.status(400).json({
       success: false,
-      error: "codProds deve ser um array de códigos de produto"
+      error: "codProds deve ser um array de cÃ³digos de produto"
     });
   }
 
@@ -472,7 +530,7 @@ app.post("/hubspot/prices/deal", async (req, res) => {
 
     // Processar cada item
     const processedItems = await Promise.all(ctx.items.map(async (item) => {
-      // Buscar preços e estoque da empresa selecionada
+      // Buscar preÃ§os e estoque da empresa selecionada
       const [pv1, pv2, pv3, estoque, estoqueOutraEmpresa] = await Promise.all([
         consultaPreco(item.codProd, ctx.codParc, ctx.codEmp, 1),
         consultaPreco(item.codProd, ctx.codParc, ctx.codEmp, 2),
@@ -491,7 +549,7 @@ app.post("/hubspot/prices/deal", async (req, res) => {
       };
     }));
 
-    // Verificar corte global (se algum item não tem estoque)
+    // Verificar corte global (se algum item nÃ£o tem estoque)
     const hasStockCut = processedItems.some(i => i.stock < i.quantity);
     if (hasStockCut) console.warn(`[CORTE] Deal ${objectId} tem itens com falta de estoque.`);
 
@@ -500,7 +558,7 @@ app.post("/hubspot/prices/deal", async (req, res) => {
       items: processedItems,
       currentAmount: ctx.props.amount,
       currentStage: ctx.props.dealstage,
-      stageLabel: DEAL_STAGE_MAP[ctx.props.dealstage] || ctx.props.dealstage, // Status Amigável
+      stageLabel: DEAL_STAGE_MAP[ctx.props.dealstage] || ctx.props.dealstage, // Status AmigÃ¡vel
       quote: ctx.activeQuote ? { id: ctx.activeQuote.id, title: ctx.activeQuote.properties.hs_title } : null
     });
   } catch (err) {
@@ -521,7 +579,7 @@ app.post("/hubspot/update/deal", async (req, res) => {
       if (pv3 && Number(amount) < pv3) {
         blockSave = true;
         await axios.patch(`https://api.hubapi.com/crm/v3/objects/deals/${objectId}`, { properties: { dealstage: STAGE_AGUARDANDO_LIBERACAO, amount: String(amount) } }, { headers: { Authorization: `Bearer ${token}` } });
-        warningMsg = "Preço < PV3. Enviado p/ aprovação.";
+        warningMsg = "PreÃ§o < PV3. Enviado p/ aprovaÃ§Ã£o.";
       }
     }
     if (!blockSave) {
@@ -572,7 +630,7 @@ app.post("/hubspot/convert-to-order", async (req, res) => {
     const hsUrl = `https://api.hubapi.com/crm/v3/objects/deals/${objectId}?properties=ordem_de_compra_anexo`;
     const hsResponse = await axios.get(hsUrl, { headers: { Authorization: `Bearer ${token}` } });
     if (!hsResponse.data.properties.ordem_de_compra_anexo) {
-      return res.status(400).json({ error: "PO não anexado." });
+      return res.status(400).json({ error: "PO nÃ£o anexado." });
     }
     await axios.patch(`https://api.hubapi.com/crm/v3/objects/deals/${objectId}`, { properties: { dealstage: STAGE_PEDIDO } }, { headers: { Authorization: `Bearer ${token}` } });
     res.json({ status: "SUCCESS" });
@@ -593,7 +651,7 @@ app.post("/debug/sql", async (req, res) => {
   }
 });
 
-// --- IMPORTAÇÃO SANKHYA -> HUBSPOT (Enterprise Grade) ---
+// --- IMPORTAÃ‡ÃƒO SANKHYA -> HUBSPOT (Enterprise Grade) ---
 
 // Helper: Search HubSpot Company by property
 async function findHubSpotCompany(token, propertyName, value) {
@@ -611,12 +669,12 @@ async function findHubSpotCompany(token, propertyName, value) {
 }
 
 app.post("/sankhya/import/partners", async (req, res) => {
-  console.log("[IMPORT] ========== INÍCIO DA IMPORTAÇÃO ==========");
+  console.log("[IMPORT] ========== INÃCIO DA IMPORTAÃ‡ÃƒO ==========");
   const token = process.env.HUBSPOT_ACCESS_TOKEN;
   const { since, limit, offset = 0 } = req.body; // since = ISO date, offset for pagination
 
   try {
-    // 1. Query Sankhya - TODOS os campos disponíveis (baseado em GerarJsonParceiro.java)
+    // 1. Query Sankhya - TODOS os campos disponÃ­veis (baseado em GerarJsonParceiro.java)
     let query = `
       SELECT P.CODPARC, P.NOMEPARC, P.RAZAOSOCIAL, P.CGC_CPF, P.EMAIL, P.TELEFONE, 
              P.CEP, P.NUMEND, P.COMPLEMENTO, P.TIPPESSOA, P.INSCESTADNAUF, 
@@ -637,7 +695,7 @@ app.post("/sankhya/import/partners", async (req, res) => {
     }
     query += ` ORDER BY P.CODPARC DESC`;
 
-    // Default limit de 1000 se não especificado (evita timeout em full syncs muito grandes)
+    // Default limit de 1000 se nÃ£o especificado (evita timeout em full syncs muito grandes)
     const effectiveLimit = limit !== undefined ? limit : 1000;
 
     // Pagination: OFFSET + FETCH (Oracle 12c+)
@@ -648,7 +706,7 @@ app.post("/sankhya/import/partners", async (req, res) => {
       query += ` FETCH FIRST ${effectiveLimit} ROWS ONLY`;
     }
 
-    console.log(`[IMPORT] Limit efetivo: ${effectiveLimit === 1000 ? '1000 (padrão)' : effectiveLimit}`);
+    console.log(`[IMPORT] Limit efetivo: ${effectiveLimit === 1000 ? '1000 (padrÃ£o)' : effectiveLimit}`);
 
     const partners = await executeSankhyaQuery(query) || [];
     console.log(`[IMPORT] ${partners.length} parceiros a processar${since ? ` (desde ${since})` : ''}`);
@@ -664,7 +722,7 @@ app.post("/sankhya/import/partners", async (req, res) => {
       const isPJ = taxId && taxId.length === 14; // CNPJ
       const isPF = taxId && taxId.length === 11; // CPF
 
-      // === DEDUPLICAÇÃO COM HIERARQUIA ===
+      // === DEDUPLICAÃ‡ÃƒO COM HIERARQUIA ===
       let company = null;
       let matchedBy = null;
 
@@ -686,7 +744,7 @@ app.post("/sankhya/import/partners", async (req, res) => {
         if (company) matchedBy = "CODPARC";
       }
 
-      // === MAPEAR TODAS AS PROPRIEDADES DISPONÍVEIS ===
+      // === MAPEAR TODAS AS PROPRIEDADES DISPONÃVEIS ===
       const properties = {
         name: parc.NOMEPARC || parc.RAZAOSOCIAL,
         razao_social: parc.RAZAOSOCIAL || undefined,
@@ -712,7 +770,7 @@ app.post("/sankhya/import/partners", async (req, res) => {
         codvend: parc.CODVEND ? Number(parc.CODVEND) : undefined,
         is_cliente: parc.CLIENTE === 'S',
         is_fornecedor: parc.FORNECEDOR === 'S',
-        tipo_de_pessoa: parc.TIPPESSOA === 'J' ? 'Jurídica' : 'Física'
+        tipo_de_pessoa: parc.TIPPESSOA === 'J' ? 'JurÃ­dica' : 'FÃ­sica'
       };
 
       // Popular CNPJ ou CPF
@@ -775,7 +833,7 @@ async function findHubSpotProduct(token, sku) {
     return null;
   }
 }
-// DEBUG: Endpoint para ver colunas disponíveis
+// DEBUG: Endpoint para ver colunas disponÃ­veis
 app.get("/sankhya/debug/products", async (req, res) => {
   try {
     const result = await executeSankhyaQuery("SELECT * FROM TGFPRO WHERE ROWNUM <= 1");
@@ -784,7 +842,7 @@ app.get("/sankhya/debug/products", async (req, res) => {
     res.status(500).send(error.message);
   }
 });
-// DEBUG: Endpoint para ver tabelas de preço
+// DEBUG: Endpoint para ver tabelas de preÃ§o
 app.get("/sankhya/debug/pricetables", async (req, res) => {
   try {
     const result = await executeSankhyaQuery("SELECT NUTAB, NOMETAB FROM TGFTAB WHERE ATIVA = 'S'");
@@ -846,7 +904,7 @@ app.get("/hubspot/debug/product-properties", async (req, res) => {
 });
 
 app.post("/sankhya/import/products", async (req, res) => {
-  console.log("[PRODUCT IMPORT] ========== INÍCIO DA IMPORTAÇÃO ==========");
+  console.log("[PRODUCT IMPORT] ========== INÃCIO DA IMPORTAÃ‡ÃƒO ==========");
   const token = process.env.HUBSPOT_ACCESS_TOKEN;
   const { since, limit, offset = 0 } = req.body;
 
@@ -898,25 +956,25 @@ app.post("/sankhya/import/products", async (req, res) => {
       const sku = String(prod.CODPROD);
       let hsProduct = await findHubSpotProduct(token, sku);
 
-      // Lógica de Prioridade de Preço Global (Para o campo price padrão)
+      // LÃ³gica de Prioridade de PreÃ§o Global (Para o campo price padrÃ£o)
       const priceDefault = prod.PRECO_MAX_TOP10 || prod.PRECO_TAB37 || prod.PRECO_TAB35 || undefined;
 
-      // Conversão de Booleanos 'S'/'N' para string "true"/"false" (para Checkboxes/Booleans no HubSpot)
+      // ConversÃ£o de Booleanos 'S'/'N' para string "true"/"false" (para Checkboxes/Booleans no HubSpot)
       const boolStr = (val) => (val === 'S' || val === 's') ? "true" : "false";
 
-      // Mapeamento de Códigos de IPI para as Opções do HubSpot (Internal Names/Values)
+      // Mapeamento de CÃ³digos de IPI para as OpÃ§Ãµes do HubSpot (Internal Names/Values)
       const mapIpiEntrada = (val) => {
         const s = val ? String(val).trim().padStart(2, '0') : "";
         if (s === '49') return '49-Outras Entradas';
-        if (s === '03') return '03-Entrada Não Tributada';
-        if (s === '-1') return '(-1)-Não sujeita ao IPI';
+        if (s === '03') return '03-Entrada NÃ£o Tributada';
+        if (s === '-1') return '(-1)-NÃ£o sujeita ao IPI';
         return val ? String(val) : undefined;
       };
       const mapIpiSaida = (val) => {
         const s = val ? String(val).trim().padStart(2, '0') : "";
-        if (s === '99') return '99-Outras Saídas';
-        if (s === '53') return '53-Saída Não Tributada';
-        if (s === '-1') return '(-1)-Não sujeita ao IPI';
+        if (s === '99') return '99-Outras SaÃ­das';
+        if (s === '53') return '53-SaÃ­da NÃ£o Tributada';
+        if (s === '-1') return '(-1)-NÃ£o sujeita ao IPI';
         return val ? String(val) : undefined;
       };
 
@@ -934,7 +992,7 @@ app.post("/sankhya/import/products", async (req, res) => {
         pv2: prod.PRECO_TAB35 || undefined,
         pv3: prod.PRECO_TAB67 || undefined,
 
-        // --- Tributação Booleans (true/false) ---
+        // --- TributaÃ§Ã£o Booleans (true/false) ---
         tem_ipi_na_venda: boolStr(prod.TEMIPIVENDA),
         tem_ipi_na_compra: boolStr(prod.TEMIPICOMPRA),
         calcular_icms: boolStr(prod.TEMICMS),
@@ -943,7 +1001,7 @@ app.post("/sankhya/import/products", async (req, res) => {
         calcular_difal: boolStr(prod.CALCDIFAL),
         atualizar_ciap: boolStr(prod.TEMCIAP),
 
-        // --- Classificação ---
+        // --- ClassificaÃ§Ã£o ---
         ncm: prod.NCM ? Number(String(prod.NCM).replace(/\D/g, '')) : undefined,
         cest__codigo_especificador_st: prod.CODESPECST ? Number(prod.CODESPECST) : undefined,
         grupo_icms: prod.GRUPOICMS || undefined,
@@ -958,7 +1016,7 @@ app.post("/sankhya/import/products", async (req, res) => {
         carga_media_trib_federal: prod.PERCCMTFED ? Number(prod.PERCCMTFED) : undefined,
         carga_media_trib_importacao: prod.PERCCMTIMP ? Number(prod.PERCCMTIMP) : undefined,
 
-        // --- Dimensões e Pesos ---
+        // --- DimensÃµes e Pesos ---
         peso_bruto: prod.PESOBRUTO ? Number(prod.PESOBRUTO) : undefined,
         unidade: prod.CODVOL || undefined,
 
@@ -974,7 +1032,7 @@ app.post("/sankhya/import/products", async (req, res) => {
         codprod: Number(sku)
       };
 
-      // DEBUG: Logar o primeiro produto do batch para conferência
+      // DEBUG: Logar o primeiro produto do batch para conferÃªncia
       if (stats.updated === 0 && stats.created === 0 && stats.errors === 0) {
         console.log(`[DEBUG PAYLOAD] SKU ${sku}:`, JSON.stringify(properties, null, 2));
       }
@@ -1025,7 +1083,7 @@ app.post("/sankhya/import/products", async (req, res) => {
   }
 });
 // ============================================================
-// 🔍 DISCOVERY ENDPOINT: Sankhya Quote Tables
+// ðŸ” DISCOVERY ENDPOINT: Sankhya Quote Tables
 // ============================================================
 app.get("/sankhya/discovery/quote-tables", async (req, res) => {
   try {
@@ -1033,14 +1091,14 @@ app.get("/sankhya/discovery/quote-tables", async (req, res) => {
 
     const queries = [
       {
-        name: "TOPs Disponíveis (Tipos de Operação)",
+        name: "TOPs DisponÃ­veis (Tipos de OperaÃ§Ã£o)",
         sql: `SELECT CODTIPOPER, DESCROPER, ATIVO, TIPATUALESTOQUE, ATUALFIN, BONIFICACAO 
               FROM TGFTOP 
               WHERE ATIVO = 'S' 
               ORDER BY CODTIPOPER`
       },
       {
-        name: "Colunas Obrigatórias - TGFCAB",
+        name: "Colunas ObrigatÃ³rias - TGFCAB",
         sql: `SELECT COLUMN_NAME, DATA_TYPE, NULLABLE, DATA_DEFAULT
               FROM USER_TAB_COLUMNS 
               WHERE TABLE_NAME = 'TGFCAB' 
@@ -1048,7 +1106,7 @@ app.get("/sankhya/discovery/quote-tables", async (req, res) => {
               ORDER BY COLUMN_ID`
       },
       {
-        name: "Colunas Obrigatórias - TGFITE",
+        name: "Colunas ObrigatÃ³rias - TGFITE",
         sql: `SELECT COLUMN_NAME, DATA_TYPE, NULLABLE, DATA_DEFAULT
               FROM USER_TAB_COLUMNS 
               WHERE TABLE_NAME = 'TGFITE' 
@@ -1056,7 +1114,7 @@ app.get("/sankhya/discovery/quote-tables", async (req, res) => {
               ORDER BY COLUMN_ID`
       },
       {
-        name: "Sample de TGFCAB (TOP 999 - Orçamento)",
+        name: "Sample de TGFCAB (TOP 999 - OrÃ§amento)",
         sql: `SELECT NUNOTA, CODPARC, CODTIPOPER, DTNEG, CODVEND, VLRNOTA, STATUSNOTA, CODCENCUS
               FROM TGFCAB 
               WHERE CODTIPOPER = 999 
@@ -1064,7 +1122,7 @@ app.get("/sankhya/discovery/quote-tables", async (req, res) => {
               ORDER BY NUNOTA DESC`
       },
       {
-        name: "Centros de Resultado Disponíveis",
+        name: "Centros de Resultado DisponÃ­veis",
         sql: `SELECT CODCENCUS, DESCRCENCUS FROM TSICUS WHERE ROWNUM <= 20 ORDER BY CODCENCUS`
       },
       {
@@ -1076,7 +1134,7 @@ app.get("/sankhya/discovery/quote-tables", async (req, res) => {
         sql: `SELECT CODNAT, COUNT(*) AS QTD FROM TGFCAB WHERE CODTIPOPER = 999 AND CODNAT IS NOT NULL GROUP BY CODNAT ORDER BY QTD DESC FETCH FIRST 10 ROWS ONLY`
       },
       {
-        name: "Naturezas Disponíveis",
+        name: "Naturezas DisponÃ­veis",
         sql: `SELECT CODNAT, DESCRNAT FROM TGFNAT WHERE ATIVO = 'S' AND ROWNUM <= 20 ORDER BY CODNAT`
       },
       {
@@ -1084,7 +1142,7 @@ app.get("/sankhya/discovery/quote-tables", async (req, res) => {
         sql: `SELECT CODTIPVENDA, COUNT(*) AS QTD FROM TGFCAB WHERE CODTIPOPER = 999 GROUP BY CODTIPVENDA ORDER BY QTD DESC FETCH FIRST 10 ROWS ONLY`
       },
       {
-        name: "Modelos de Impressão (TOP 999)",
+        name: "Modelos de ImpressÃ£o (TOP 999)",
         sql: `SELECT CODTIPOPER, CODREL, DESCRREL FROM TGFTPR WHERE CODTIPOPER = 999`
       },
       {
@@ -1092,11 +1150,11 @@ app.get("/sankhya/discovery/quote-tables", async (req, res) => {
         sql: `SELECT * FROM TGFMODTOP WHERE CODTIPOPER = 999`
       },
       {
-        name: "Todos os Relatórios (TSIREL) - Busca por Nome",
+        name: "Todos os RelatÃ³rios (TSIREL) - Busca por Nome",
         sql: `SELECT CODREL, NOMEREL, DESCRREL FROM TSIREL WHERE NOMEREL LIKE '%ORC%' OR NOMEREL LIKE '%PED%'`
       },
       {
-        name: "Relatórios Formatados (TFPMOD) - Busca por Nome",
+        name: "RelatÃ³rios Formatados (TFPMOD) - Busca por Nome",
         sql: `SELECT CODREL, CODMOD, NOMEREL FROM TFPMOD WHERE NOMEREL LIKE '%ORC%' OR NOMEREL LIKE '%PED%'`
       },
       {
@@ -1143,13 +1201,13 @@ app.get("/sankhya/discovery/quote-tables", async (req, res) => {
 });
 
 // ============================================================
-// 🔍 DISCOVERY: Test Available Sankhya Services
+// ðŸ” DISCOVERY: Test Available Sankhya Services
 // ============================================================
 app.get("/sankhya/discovery/services", async (req, res) => {
   try {
     const token = await getAccessToken();
 
-    // Lista de serviços candidatos para criar notas/orçamentos
+    // Lista de serviÃ§os candidatos para criar notas/orÃ§amentos
     const services = [
       { module: "mge", name: "CACSP.incluirNota" },
       { module: "mgecom", name: "CACSP.incluirNota" },
@@ -1206,14 +1264,14 @@ app.get("/sankhya/discovery/services", async (req, res) => {
 });
 
 // ============================================================
-// 🔍 DEBUG ENDPOINT: Inspect Deal Structure
+// ðŸ” DEBUG ENDPOINT: Inspect Deal Structure
 // ============================================================
 app.get("/hubspot/debug-deal/:dealId", async (req, res) => {
   try {
     const { dealId } = req.params;
     const hubspotToken = requireEnv("HUBSPOT_ACCESS_TOKEN");
 
-    // Buscar Deal com todas as associações possíveis
+    // Buscar Deal com todas as associaÃ§Ãµes possÃ­veis
     const dealUrl = `https://api.hubspot.com/crm/v3/objects/deals/${dealId}?associations=companies,contacts,quotes,line_items&properties=dealname,amount,dealstage`;
     const dealResp = await axios.get(dealUrl, {
       headers: { Authorization: `Bearer ${hubspotToken}` }
@@ -1254,21 +1312,21 @@ app.get("/hubspot/debug-deal/:dealId", async (req, res) => {
 });
 
 // ============================================================
-// 📝 CREATE QUOTE ENDPOINT: HubSpot Deal → Sankhya Orçamento
+// ðŸ“ CREATE QUOTE ENDPOINT: HubSpot Deal â†’ Sankhya OrÃ§amento
 // ============================================================
 app.post("/hubspot/create-quote", async (req, res) => {
   try {
     const { dealId } = req.body;
 
     if (!dealId) {
-      return res.status(400).json({ success: false, error: "dealId é obrigatório" });
+      return res.status(400).json({ success: false, error: "dealId Ã© obrigatÃ³rio" });
     }
 
     const hubspotToken = requireEnv("HUBSPOT_ACCESS_TOKEN");
 
     // 1. Buscar dados do Deal (apenas propriedades)
     console.log(`[QUOTE] Buscando Deal ${dealId}...`);
-    const dealUrl = `https://api.hubspot.com/crm/v3/objects/deals/${dealId}?properties=codemp_sankhya,sankhya_codemp,amount,dealname,closedate,tipo_negociacao,dealtype,natureza_id,hubspot_owner_id`;
+    const dealUrl = `https://api.hubspot.com/crm/v3/objects/deals/${dealId}?properties=codemp_sankhya,sankhya_codemp,amount,dealname,closedate,tipo_negociacao,dealtype,natureza_id,hubspot_owner_id,observacao,observacao_frete,observacao_interna`;
     const dealResp = await axios.get(dealUrl, {
       headers: { Authorization: `Bearer ${hubspotToken}` }
     });
@@ -1285,10 +1343,10 @@ app.post("/hubspot/create-quote", async (req, res) => {
     const codTipVenda = toInt("codTipVenda", codTipVendaRaw) || 503;
 
     const codTipOperRaw = props.dealtype;
-    const codTipOper = toInt("codTipOper", codTipOperRaw) || 999; // Fallback 999 = Orçamento
+    const codTipOper = toInt("codTipOper", codTipOperRaw) || 999; // Fallback 999 = OrÃ§amento
 
     const codNatRaw = props.natureza_id;
-    const codNat = toInt("codNat", codNatRaw) || 101001; // Fallback para natureza padrão
+    const codNat = toInt("codNat", codNatRaw) || 101001; // Fallback para natureza padrÃ£o
 
     console.log(`[QUOTE] Propriedades Sankhya mapeadas:`);
     console.log(`  - CODTIPOPER: ${codTipOper} (dealtype)`);
@@ -1306,7 +1364,7 @@ app.post("/hubspot/create-quote", async (req, res) => {
     if (!companyId) {
       return res.status(400).json({
         success: false,
-        error: "Deal não possui Company associada"
+        error: "Deal nÃ£o possui Company associada"
       });
     }
 
@@ -1321,11 +1379,11 @@ app.post("/hubspot/create-quote", async (req, res) => {
     if (!codParc) {
       return res.status(400).json({
         success: false,
-        error: "Company não possui código Sankhya (sankhya_codparc ou codparc)"
+        error: "Company nÃ£o possui cÃ³digo Sankhya (sankhya_codparc ou codparc)"
       });
     }
 
-    // 4. Buscar Line Items (método correto via associations API)
+    // 4. Buscar Line Items (mÃ©todo correto via associations API)
     console.log(`[QUOTE] Buscando Line Items do Deal ${dealId}...`);
     const lineItemsAssocUrl = `https://api.hubspot.com/crm/v3/objects/deals/${dealId}/associations/line_items`;
     const lineItemsAssocResp = await axios.get(lineItemsAssocUrl, {
@@ -1337,7 +1395,7 @@ app.post("/hubspot/create-quote", async (req, res) => {
     if (lineItemIds.length === 0) {
       return res.status(400).json({
         success: false,
-        error: "Deal não possui Line Items associados"
+        error: "Deal nÃ£o possui Line Items associados"
       });
     }
 
@@ -1353,7 +1411,7 @@ app.post("/hubspot/create-quote", async (req, res) => {
 
     const lineItems = lineItemsResp.data.results;
 
-    // 5. Mapear produtos HubSpot → Sankhya
+    // 5. Mapear produtos HubSpot â†’ Sankhya
     const productItems = [];
     for (const item of lineItems) {
       const hsProductId = item.properties.hs_product_id;
@@ -1361,7 +1419,7 @@ app.post("/hubspot/create-quote", async (req, res) => {
       const price = parseFloat(item.properties.price) || 0;
       let sku = item.properties.hs_sku;
 
-      // Se não veio SKU no Line Item, tenta buscar no objeto Product (se houver ID)
+      // Se nÃ£o veio SKU no Line Item, tenta buscar no objeto Product (se houver ID)
       if (!sku && hsProductId) {
         try {
           const prodResp = await axios.get(
@@ -1374,7 +1432,7 @@ app.post("/hubspot/create-quote", async (req, res) => {
         }
       }
 
-      // Sanitizar SKU: extrair apenas a parte numérica (ex: "72#2" -> "72")
+      // Sanitizar SKU: extrair apenas a parte numÃ©rica (ex: "72#2" -> "72")
       if (sku) {
         sku = String(sku).split('#')[0].trim();
       }
@@ -1382,7 +1440,7 @@ app.post("/hubspot/create-quote", async (req, res) => {
       const codProd = toInt("codProd", sku);
 
       if (!codProd) {
-        console.warn(`[QUOTE] Line Item ${item.id} (${item.properties.name}) não possui SKU/CODPROD válido: ${sku}`);
+        console.warn(`[QUOTE] Line Item ${item.id} (${item.properties.name}) nÃ£o possui SKU/CODPROD vÃ¡lido: ${sku}`);
         continue;
       }
 
@@ -1403,7 +1461,7 @@ app.post("/hubspot/create-quote", async (req, res) => {
     if (productItems.length === 0) {
       return res.status(400).json({
         success: false,
-        error: "Nenhum produto válido encontrado nos Line Items"
+        error: "Nenhum produto vÃ¡lido encontrado nos Line Items"
       });
     }
 
@@ -1412,15 +1470,15 @@ app.post("/hubspot/create-quote", async (req, res) => {
     const dtneg = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
     const dtNegFormatted = new Date().toLocaleDateString('pt-BR'); // DD/MM/YYYY
 
-    // 7. Criar orçamento usando CRUD Service do Sankhya
-    console.log(`[QUOTE] Criando orçamento via CRUD Service para CODPARC=${codParc}, CODEMP=${codEmp}, VLRNOTA=${vlrNota}...`);
+    // 7. Criar orÃ§amento usando CRUD Service do Sankhya
+    console.log(`[QUOTE] Criando orÃ§amento via CRUD Service para CODPARC=${codParc}, CODEMP=${codEmp}, VLRNOTA=${vlrNota}...`);
 
-    // Estrutura de dados para o orçamento (TGFCAB + TGFITE)
+    // Estrutura de dados para o orÃ§amento (TGFCAB + TGFITE)
     const orderData = {
       cabecalho: {
         CODEMP: codEmp,
         CODPARC: codParc,
-        CODTIPOPER: codTipOper, // Tipo de Operação (999=Orçamento)
+        CODTIPOPER: codTipOper, // Tipo de OperaÃ§Ã£o (999=OrÃ§amento)
         CODEMPNEGOC: codEmp,
         CODVEND: 0,
         TIPMOV: 'P', // Pedido
@@ -1436,7 +1494,7 @@ app.post("/hubspot/create-quote", async (req, res) => {
       }))
     };
 
-    // Usar o serviço de inclusão de nota do Sankhya (módulo MGECOM)
+    // Usar o serviÃ§o de inclusÃ£o de nota do Sankhya (mÃ³dulo MGECOM)
     const INCLUIR_NOTA_URL = `${baseUrl}/gateway/v1/mgecom/service.sbr?serviceName=CACSP.incluirNota&outputType=json`;
 
     // Estrutura correta do payload para CACSP.incluirNota
@@ -1447,14 +1505,17 @@ app.post("/hubspot/create-quote", async (req, res) => {
             NUNOTA: { "$": "" },  // Vazio para criar novo
             CODEMP: { "$": codEmp },
             CODPARC: { "$": codParc },
-            CODTIPOPER: { "$": codTipOper },      // Tipo de Operação: da propriedade dealtype
+            CODTIPOPER: { "$": codTipOper },      // Tipo de OperaÃ§Ã£o: da propriedade dealtype
             CODEMPNEGOC: { "$": codEmp },
             CODVEND: { "$": 0 },                    // TODO: mapear hubspot_owner_id
             TIPMOV: { "$": "P" },
             DTNEG: { "$": dtNegFormatted },
             CODCENCUS: { "$": 101002 },             // Centro de Custo: FIXO (COMERCIAL)
             CODNAT: { "$": codNat },                // Natureza: da propriedade natureza_id
-            CODTIPVENDA: { "$": codTipVenda }       // Tipo de Negociação: da propriedade tipo_negociacao
+            CODTIPVENDA: { "$": codTipVenda },       // Tipo de NegociaÃ§Ã£o: da propriedade tipo_negociacao
+            OBSERVACAO: { "$": props.observacao || "" },
+            AD_OBSFRETE: { "$": props.observacao_frete || "" },
+            AD_OBSERVACAOINTERNA: { "$": props.observacao_interna || "" }
           },
           itens: {
             item: productItems.map((item, index) => ({
@@ -1463,7 +1524,7 @@ app.post("/hubspot/create-quote", async (req, res) => {
               CODEMP: { "$": codEmp },
               CODPROD: { "$": item.codProd },
               CODVOL: { "$": item.codVol },
-              CODLOCALORIG: { "$": 0 },   // Local de Origem: padrão
+              CODLOCALORIG: { "$": 0 },   // Local de Origem: padrÃ£o
               QTDNEG: { "$": item.qtdNeg },
               VLRUNIT: { "$": item.vlrUnit },
               VLRTOT: { "$": item.vlrTot }
@@ -1494,14 +1555,14 @@ app.post("/hubspot/create-quote", async (req, res) => {
       : nunotaRaw;
 
     if (!nunota) {
-      // Tentar buscar o último NUNOTA criado para o parceiro
+      // Tentar buscar o Ãºltimo NUNOTA criado para o parceiro
       const getNunotaSql = `SELECT MAX(NUNOTA) AS NUNOTA FROM TGFCAB WHERE CODPARC = ${codParc} AND CODTIPOPER = 999`;
       const nunotaResp = await postGatewayWithRetry({ requestBody: { sql: getNunotaSql } });
       const fallbackNunota = nunotaResp.data?.responseBody?.rows?.[0]?.[0];
 
       if (!fallbackNunota) {
-        console.error(`[QUOTE] Falha ao criar orçamento. Resposta completa: ${JSON.stringify(notaResp.data)}`);
-        throw new Error(`Falha ao criar orçamento no Sankhya. Verifique os logs.`);
+        console.error(`[QUOTE] Falha ao criar orÃ§amento. Resposta completa: ${JSON.stringify(notaResp.data)}`);
+        throw new Error(`Falha ao criar orÃ§amento no Sankhya. Verifique os logs.`);
       }
 
       console.log(`[QUOTE] NUNOTA obtido via fallback: ${fallbackNunota}`);
@@ -1512,7 +1573,7 @@ app.post("/hubspot/create-quote", async (req, res) => {
         codParc,
         vlrNota,
         itemCount: productItems.length,
-        message: `Orçamento ${fallbackNunota} criado com sucesso! (fallback)`
+        message: `OrÃ§amento ${fallbackNunota} criado com sucesso! (fallback)`
       });
     }
 
@@ -1526,7 +1587,7 @@ app.post("/hubspot/create-quote", async (req, res) => {
         `https://api.hubspot.com/crm/v3/objects/deals/${dealId}`,
         {
           properties: {
-            sankhya_nunota: nunota.toString() // Propriedade customizada no HubSpot
+            orcamento_sankhya: nunota.toString() // Propriedade customizada no HubSpot
           }
         },
         { headers: { Authorization: `Bearer ${hubspotToken}` } }
@@ -1534,12 +1595,12 @@ app.post("/hubspot/create-quote", async (req, res) => {
       hubspotUpdateSuccess = true;
       console.log(`[QUOTE] Deal ${dealId} atualizado com NUNOTA ${nunota}`);
     } catch (hsError) {
-      console.warn(`[QUOTE] Falha ao atualizar Deal no HubSpot (propriedade pode não existir): ${hsError.message}`);
-      // Não falhar - o orçamento foi criado com sucesso no Sankhya
+      console.warn(`[QUOTE] Falha ao atualizar Deal no HubSpot (propriedade pode nÃ£o existir): ${hsError.message}`);
+      // NÃ£o falhar - o orÃ§amento foi criado com sucesso no Sankhya
     }
 
-    // PDF só será gerado após confirmação do orçamento (quando houver rentabilidade e estoque)
-    console.log(`[QUOTE] ℹ️ PDF não gerado - orçamento precisa ser confirmado primeiro`);
+    // PDF sÃ³ serÃ¡ gerado apÃ³s confirmaÃ§Ã£o do orÃ§amento (quando houver rentabilidade e estoque)
+    console.log(`[QUOTE] â„¹ï¸ PDF nÃ£o gerado - orÃ§amento precisa ser confirmado primeiro`);
 
     res.json({
       success: true,
@@ -1549,7 +1610,7 @@ app.post("/hubspot/create-quote", async (req, res) => {
       vlrNota,
       itemCount: productItems.length,
       hubspotUpdated: hubspotUpdateSuccess,
-      message: `Orçamento ${nunota} criado com sucesso no Sankhya! Aguardando confirmação para gerar PDF.`
+      message: `OrÃ§amento ${nunota} criado com sucesso no Sankhya! Aguardando confirmaÃ§Ã£o para gerar PDF.`
     });
 
   } catch (error) {
@@ -1562,26 +1623,26 @@ app.post("/hubspot/create-quote", async (req, res) => {
   }
 });
 
-// --- PROFITABILITY CHECK ENDPOINT ---
-/**
- * GET /sankhya/check-profitability/:nunota
- * Retorna dados de rentabilidade de uma nota/orçamento usando o serviço nativo do Sankhya
- */
-app.get("/sankhya/check-profitability/:nunota", async (req, res) => {
-  const { nunota } = req.params;
-
+// --- PROFITABILITY SHARED LOGIC ---
+async function getProfitabilityInternal(nunota, codemp = null) {
   try {
-    console.log(`[PROFITABILITY] Checking profitability for NUNOTA ${nunota}...`);
-
+    console.log(`[PROFITABILITY INTERNAL] Fetching profitability for NUNOTA ${nunota}, CODEMP ${codemp}...`);
     const token = await getAccessToken();
     const url = `${baseUrl}/gateway/v1/mge/service.sbr?serviceName=LiberacaoLimitesSP.getDadosRentabilidade&outputType=json`;
+
+    const paramsObj = { nuNota: Number(nunota) };
+    if (codemp) {
+      paramsObj.CODEMP = Number(codemp);
+    }
 
     const payload = {
       serviceName: "LiberacaoLimitesSP.getDadosRentabilidade",
       requestBody: {
-        NUNOTA: Number(nunota)
+        params: paramsObj
       }
     };
+
+    console.log(`[PROFITABILITY] Calling Sankhya service with payload:`, JSON.stringify(payload));
 
     const resp = await axios.post(url, payload, {
       headers: {
@@ -1590,16 +1651,19 @@ app.get("/sankhya/check-profitability/:nunota", async (req, res) => {
       }
     });
 
+    console.log(`[PROFITABILITY] Raw response status: ${resp.status}`);
+    console.log(`[PROFITABILITY] Full response data:`, JSON.stringify(resp.data));
+
     const data = resp.data?.responseBody;
 
     if (!data) {
-      return res.status(404).json({
-        success: false,
-        error: "Dados de rentabilidade não encontrados"
-      });
+      console.warn(`[PROFITABILITY] No responseBody found for NUNOTA ${nunota}`);
+      console.warn(`[PROFITABILITY] Response keys:`, Object.keys(resp.data || {}));
+      return { success: false, error: "Dados de rentabilidade nÃ£o encontrados no Sankhya" };
     }
 
-    // Parse percentages (Brazilian format "5,992%" -> 5.992)
+    console.log(`[PROFITABILITY DEBUG] responseBody keys:`, Object.keys(data));
+
     const parsePercent = (str) => {
       if (!str) return 0;
       return parseFloat(String(str).replace(',', '.').replace('%', '')) || 0;
@@ -1619,31 +1683,35 @@ app.get("/sankhya/check-profitability/:nunota", async (req, res) => {
       percentGV: parsePercent(data.percentGV),
       percentGF: parsePercent(data.percentGF),
       isRentavel: parseFloat(data.somaLucro) > 0,
-      qtdItens: parseInt(data.contItens) || 0,
-      produtosComCusto: data.produtosComCusto?.entities?.entity || null,
-      produtosSemCusto: data.produtosSemCusto?.entities?.entity || null
+      qtdItens: parseInt(data.contItens) || 0
     };
 
-    console.log(`[PROFITABILITY] NUNOTA ${nunota}: Lucro=${profitability.lucro}, %Lucro=${profitability.percentLucro}%, Rentável=${profitability.isRentavel}`);
-
-    res.json({
-      success: true,
-      profitability
-    });
-
+    console.log(`[PROFITABILITY SUCCESS] NUNOTA ${nunota}: Lucro=${profitability.lucro}, RentÃ¡vel=${profitability.isRentavel}`);
+    return { success: true, profitability };
   } catch (error) {
-    console.error(`[PROFITABILITY ERROR] ${error.message}`);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    console.error(`[PROFITABILITY INTERNAL ERROR] ${error.message}`);
+    return { success: false, error: error.message };
+  }
+}
+
+// --- PROFITABILITY CHECK ENDPOINT ---
+/**
+ * GET /sankhya/check-profitability/:nunota
+ */
+app.get("/sankhya/check-profitability/:nunota", async (req, res) => {
+  const { nunota } = req.params;
+  const result = await getProfitabilityInternal(nunota);
+  if (result.success) {
+    res.json(result);
+  } else {
+    res.status(500).json(result);
   }
 });
 
 // --- QUOTE STATUS CHECK ENDPOINT ---
 /**
  * GET /hubspot/quote-status/:dealId
- * Retorna status do orçamento de um Deal para controle de botões dinâmicos
+ * Retorna status do orÃ§amento de um Deal para controle de botÃµes dinÃ¢micos
  */
 app.get("/hubspot/quote-status/:dealId", async (req, res) => {
   const { dealId } = req.params;
@@ -1651,16 +1719,20 @@ app.get("/hubspot/quote-status/:dealId", async (req, res) => {
   try {
     console.log(`[QUOTE-STATUS] Checking quote status for Deal ${dealId}...`);
 
-    // 1. Buscar Deal no HubSpot
-    const dealResp = await axios.get(
-      `https://api.hubspot.com/crm/v3/objects/deals/${dealId}?properties=sankhya_nunota,dealname`,
-      { headers: { Authorization: `Bearer ${hubspotToken}` } }
-    );
+    const hubspotToken = requireEnv("HUBSPOT_ACCESS_TOKEN");
 
-    const nunota = dealResp.data.properties?.sankhya_nunota;
+    // 1. Buscar Deal no HubSpot
+    const dealUrl =
+      `https://api.hubspot.com/crm/v3/objects/deals/${dealId}?properties=orcamento_sankhya,dealname`;
+
+    const dealResp = await axios.get(dealUrl, {
+      headers: { Authorization: `Bearer ${process.env.HUBSPOT_ACCESS_TOKEN}` }
+    });
+
+    const nunota = dealResp.data.properties?.orcamento_sankhya;
     const dealname = dealResp.data.properties?.dealname;
 
-    // Se não tem NUNOTA, ainda não tem orçamento
+    // Se nÃ£o tem NUNOTA, ainda nÃ£o tem orÃ§amento
     if (!nunota) {
       return res.json({
         success: true,
@@ -1672,52 +1744,59 @@ app.get("/hubspot/quote-status/:dealId", async (req, res) => {
           isConfirmed: false,
           profitability: null,
           buttonAction: "CREATE_QUOTE",
-          buttonLabel: "Criar Orçamento"
+          buttonLabel: "Criar OrÃ§amento"
         }
       });
     }
 
-    // 2. Verificar se nota está confirmada no Sankhya
+    // 2. Verificar se nota estÃ¡ confirmada no Sankhya
     const token = await getAccessToken();
-    const notaStatusSql = `SELECT STATUSNOTA, STATUSNFE, VLRNOTA FROM TGFCAB WHERE NUNOTA = ${nunota}`;
+    const notaStatusSql = `SELECT STATUSNOTA, STATUSNFE, VLRNOTA, CONFIRMADA, CODEMP FROM TGFCAB WHERE NUNOTA = ${nunota}`;
     const notaResp = await postGatewayWithRetry({ requestBody: { sql: notaStatusSql } });
     const notaRow = notaResp.data?.responseBody?.rows?.[0];
 
-    const statusNota = notaRow?.[0] || "P"; // P = Pendente, L = Liberada, F = Fechada
+    const statusNota = notaRow?.[0] || "P";
     const vlrNota = parseFloat(notaRow?.[2]) || 0;
-    const isConfirmed = statusNota !== "P"; // Qualquer status diferente de Pendente = confirmada
+    const confirmada = notaRow?.[3] || "N";
+    const codemp = notaRow?.[4];
+
+    // Consideramos confirmado se STATUSNOTA nÃ£o for P OU se a coluna CONFIRMADA for 'S'
+    const isConfirmed = statusNota !== "P" || confirmada === "S";
 
     // 3. Buscar rentabilidade
     let profitability = null;
     let isRentavel = false;
+    let profitabilityError = null;
 
     try {
-      const profResp = await axios.get(
-        `http://localhost:${PORT}/sankhya/check-profitability/${nunota}`
-      );
-      if (profResp.data?.success) {
-        profitability = profResp.data.profitability;
+      const profResult = await getProfitabilityInternal(nunota, codemp);
+      if (profResult.success) {
+        profitability = profResult.profitability;
         isRentavel = profitability.isRentavel;
+      } else {
+        console.warn(`[QUOTE-STATUS] Could not fetch profitability: ${profResult.error}`);
+        profitabilityError = profResult.error;
       }
     } catch (e) {
-      console.warn(`[QUOTE-STATUS] Could not fetch profitability: ${e.message}`);
+      console.warn(`[QUOTE-STATUS] Exception fetching profitability: ${e.message}`);
+      profitabilityError = e.message;
     }
 
-    // 4. Determinar ação do botão
+    // 4. Determinar aÃ§Ã£o do botÃ£o
     let buttonAction, buttonLabel;
 
     if (!isConfirmed && isRentavel) {
       buttonAction = "CONFIRM_QUOTE";
-      buttonLabel = "Confirmar Orçamento";
+      buttonLabel = "Confirmar OrÃ§amento";
     } else if (!isConfirmed && !isRentavel) {
       buttonAction = "NEEDS_APPROVAL";
-      buttonLabel = "Aguardando Aprovação";
+      buttonLabel = "Aguardando AprovaÃ§Ã£o";
     } else if (isConfirmed) {
       buttonAction = "GENERATE_PDF";
       buttonLabel = "Gerar PDF";
     } else {
       buttonAction = "VIEW_QUOTE";
-      buttonLabel = "Ver Orçamento";
+      buttonLabel = "Ver OrÃ§amento";
     }
 
     res.json({
@@ -1731,6 +1810,7 @@ app.get("/hubspot/quote-status/:dealId", async (req, res) => {
         isConfirmed,
         vlrNota,
         profitability,
+        profitabilityError,
         isRentavel,
         buttonAction,
         buttonLabel
@@ -1749,7 +1829,7 @@ app.get("/hubspot/quote-status/:dealId", async (req, res) => {
 // --- QUOTE CONFIRMATION ENDPOINT ---
 /**
  * POST /hubspot/confirm-quote
- * Confirma um orçamento no Sankhya após validar rentabilidade
+ * Confirma um orÃ§amento no Sankhya apÃ³s validar rentabilidade
  */
 app.post("/hubspot/confirm-quote", async (req, res) => {
   const { dealId, nunota, forceConfirm } = req.body;
@@ -1757,7 +1837,7 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
   if (!dealId || !nunota) {
     return res.status(400).json({
       success: false,
-      error: "dealId e nunota são obrigatórios"
+      error: "dealId e nunota sÃ£o obrigatÃ³rios"
     });
   }
 
@@ -1765,44 +1845,46 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
     console.log(`[CONFIRM-QUOTE] Confirming NUNOTA ${nunota} for Deal ${dealId}...`);
 
     // 1. Verificar rentabilidade
-    const profResp = await axios.get(
-      `http://localhost:${PORT}/sankhya/check-profitability/${nunota}`
-    );
-
-    const profitability = profResp.data?.profitability;
+    const profResult = await getProfitabilityInternal(nunota);
+    const profitability = profResult.profitability;
 
     if (!profitability) {
       return res.status(400).json({
         success: false,
-        error: "Não foi possível verificar rentabilidade"
+        error: "NÃ£o foi possÃ­vel verificar rentabilidade"
       });
     }
 
-    // Se não for rentável e não forçar confirmação, bloquear
+    // Se nÃ£o for rentÃ¡vel e nÃ£o forÃ§ar confirmaÃ§Ã£o, bloquear
     if (!profitability.isRentavel && !forceConfirm) {
       return res.status(400).json({
         success: false,
-        error: "Orçamento não é rentável (lucro negativo)",
+        error: "OrÃ§amento nÃ£o Ã© rentÃ¡vel (lucro negativo)",
         profitability,
         requiresApproval: true
       });
     }
 
-    // 2. Confirmar nota no Sankhya
-    // Usando o serviço CACSP.confirmarNota ou alterando STATUSNOTA diretamente
+    // 2. Confirmar nota no Sankhya via SQL UPDATE
     const token = await getAccessToken();
 
-    // Método: Atualizar STATUSNOTA para 'L' (Liberada)
-    const updateSql = `UPDATE TGFCAB SET STATUSNOTA = 'L' WHERE NUNOTA = ${nunota} AND STATUSNOTA = 'P'`;
+    // SQL UPDATE Solution (Direct Database Update)
+    // Why: ServiceController APIs not available in current Sankhya libraries
+    // Trade-off: Doesn't trigger all business rules but updates status successfully
+    console.log(`[CONFIRM-QUOTE] Using SQL UPDATE to confirm NUNOTA ${nunota}...`);
 
-    const updateResp = await axios.post(
+    const sqlQuery = `UPDATE TGFCAB SET STATUSNOTA = 'L' WHERE NUNOTA = ${nunota} AND STATUSNOTA = 'P'`;
+
+    const confirmPayload = {
+      serviceName: "DbExplorerSP.executeQuery",
+      requestBody: {
+        sql: sqlQuery
+      }
+    };
+
+    const confirmResp = await axios.post(
       `${baseUrl}/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json`,
-      {
-        serviceName: "DbExplorerSP.executeQuery",
-        requestBody: {
-          sql: updateSql
-        }
-      },
+      confirmPayload,
       {
         headers: {
           "Authorization": `Bearer ${token}`,
@@ -1811,7 +1893,32 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
       }
     );
 
-    console.log(`[CONFIRM-QUOTE] NUNOTA ${nunota} confirmed successfully`);
+    console.log(`[CONFIRM-QUOTE] SQL UPDATE response:`, JSON.stringify(confirmResp.data));
+
+    // Check for success
+    if (confirmResp.data.status !== "1") {
+      throw new Error(`SQL UPDATE failed: ${JSON.stringify(confirmResp.data)}`);
+    }
+
+    // Verify rows affected (should be in response)
+    const rowsAffected = confirmResp.data.responseBody?.rows || 0;
+    if (rowsAffected === 0) {
+      throw new Error(`NUNOTA ${nunota} not found or already confirmed`);
+    }
+
+    console.log(`[CONFIRM-QUOTE] NUNOTA ${nunota} confirmed successfully via SQL UPDATE (${rowsAffected} rows affected)`);
+
+    // 2.2. Atualizar Deal no HubSpot com a confirmaÃ§Ã£o (sankhya_nunota)
+    console.log(`[CONFIRM-QUOTE] Marcando Deal ${dealId} como confirmado no HubSpot...`);
+    try {
+      await axios.patch(
+        `https://api.hubapi.com/crm/v3/objects/deals/${dealId}`,
+        { properties: { sankhya_nunota: nunota.toString() } },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+    } catch (hsError) {
+      console.warn(`[CONFIRM-QUOTE] Falha ao preencher sankhya_nunota: ${hsError.message}`);
+    }
 
     // 3. Gerar PDF automaticamente
     let pdfResult = null;
@@ -1826,9 +1933,9 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
       await createNoteWithPDFAttachment(dealId, fileId, nunota);
 
       pdfResult = { success: true, fileId, url };
-      console.log(`[CONFIRM-QUOTE] ✅ PDF attached successfully!`);
+      console.log(`[CONFIRM-QUOTE] âœ… PDF attached successfully!`);
     } catch (pdfErr) {
-      console.warn(`[CONFIRM-QUOTE] ⚠️ PDF generation failed: ${pdfErr.message}`);
+      console.warn(`[CONFIRM-QUOTE] âš ï¸ PDF generation failed: ${pdfErr.message}`);
       pdfResult = { success: false, error: pdfErr.message };
     }
 
@@ -1839,7 +1946,7 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
       confirmed: true,
       profitability,
       pdfResult,
-      message: `Orçamento ${nunota} confirmado com sucesso!${pdfResult?.success ? ' PDF anexado ao Deal.' : ''}`
+      message: `OrÃ§amento ${nunota} confirmado com sucesso!${pdfResult?.success ? ' PDF anexado ao Deal.' : ''}`
     });
 
   } catch (error) {
@@ -1854,7 +1961,7 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
 // --- NEW PDF & HUBSPOT ATTACHMENT FUNCTIONS ---
 
 /**
- * Gera um PDF no Sankhya para uma NUNOTA específica
+ * Gera um PDF no Sankhya para uma NUNOTA especÃ­fica
  */
 async function generateSankhyaPDF(nunota) {
   const token = await getAccessToken();
@@ -1863,7 +1970,7 @@ async function generateSankhyaPDF(nunota) {
 
   /* 
     Payload identificado via HAR do Sankhya Web
-    1. imprimeDocumentos: Gera o relatório e retorna status 1
+    1. imprimeDocumentos: Gera o relatÃ³rio e retorna status 1
     2. getDocumentData: Retorna o PDF em Base64
   */
   const fileName = `${nunota}_Orcamento`;
@@ -1885,7 +1992,7 @@ async function generateSankhyaPDF(nunota) {
     }
   };
 
-  console.log(`[PDF] 1. Solicitando Impressão para NUNOTA ${nunota}...`);
+  console.log(`[PDF] 1. Solicitando ImpressÃ£o para NUNOTA ${nunota}...`);
   const resp1 = await axios.post(url, payload, {
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     timeout: 30000
@@ -1916,7 +2023,7 @@ async function generateSankhyaPDF(nunota) {
   const pdfBase64 = respData.data?.responseBody?.PDF;
 
   if (!pdfBase64) {
-    throw new Error('PDF não retornado em getDocumentData');
+    throw new Error('PDF nÃ£o retornado em getDocumentData');
   }
 
   // Retornar objeto com base64 (limpo se tiver prefixo data:application/pdf;base64,)
@@ -1968,7 +2075,7 @@ async function uploadPDFToHubSpot(fileName, base64Data) {
     }
   );
 
-  console.log(`[HUBSPOT] Upload concluído. File ID: ${response.data.id}`);
+  console.log(`[HUBSPOT] Upload concluÃ­do. File ID: ${response.data.id}`);
 
   return {
     fileId: response.data.id,
@@ -1985,7 +2092,7 @@ async function createNoteWithPDFAttachment(dealId, fileId, nunota) {
   const payload = {
     properties: {
       hs_timestamp: new Date().toISOString(),
-      hs_note_body: `Orçamento Sankhya #${nunota} anexado automaticamente.`,
+      hs_note_body: `OrÃ§amento Sankhya #${nunota} anexado automaticamente.`,
       hs_attachment_ids: fileId.toString()
     },
     associations: [
@@ -2019,14 +2126,14 @@ async function createNoteWithPDFAttachment(dealId, fileId, nunota) {
 
 
 /**
- * Gera PDF de um orçamento Sankhya (para testes)
+ * Gera PDF de um orÃ§amento Sankhya (para testes)
  */
 app.get("/sankhya/generate-pdf/:nunota", async (req, res) => {
   try {
     const { nunota } = req.params;
     const result = await generateSankhyaPDF(nunota);
 
-    // Não retornar o base64 inteiro no log/response para não travar
+    // NÃ£o retornar o base64 inteiro no log/response para nÃ£o travar
     res.json({
       success: true,
       fileName: result.fileName,
@@ -2060,7 +2167,7 @@ app.post("/sankhya/pdf/attach", async (req, res) => {
     console.log(`[E2E TEST] Passo 3/3: Criando nota no Deal...`);
     const noteId = await createNoteWithPDFAttachment(dealId, fileId, nunota);
 
-    console.log(`[E2E TEST] ✅ Fluxo concluído com sucesso!\n`);
+    console.log(`[E2E TEST] âœ… Fluxo concluÃ­do com sucesso!\n`);
 
     res.json({
       success: true,
@@ -2069,7 +2176,7 @@ app.post("/sankhya/pdf/attach", async (req, res) => {
       fileId,
       fileUrl: url,
       noteId,
-      message: `PDF do orçamento ${nunota} anexado ao Deal ${dealId} com sucesso!`
+      message: `PDF do orÃ§amento ${nunota} anexado ao Deal ${dealId} com sucesso!`
     });
   } catch (error) {
     console.error(`[E2E TEST ERROR] ${error.message}`, error);
@@ -2077,7 +2184,435 @@ app.post("/sankhya/pdf/attach", async (req, res) => {
   }
 });
 
+// ============================================================
+// ðŸ”¨ GENERATE HEADER ENDPOINT: Create quote header without items
+// ============================================================
+app.post("/hubspot/generate-header", async (req, res) => {
+  try {
+    const { dealId } = req.body;
+
+    if (!dealId) {
+      return res.status(400).json({ success: false, error: "dealId Ã© obrigatÃ³rio" });
+    }
+
+    const hubspotToken = requireEnv("HUBSPOT_ACCESS_TOKEN");
+
+    // 1. Buscar dados do Deal
+    console.log(`[GENERATE-HEADER] Buscando Deal ${dealId}...`);
+    const dealUrl = `https://api.hubspot.com/crm/v3/objects/deals/${dealId}?properties=codemp_sankhya,sankhya_codemp,dealname,closedate,tipo_negociacao,dealtype,hubspot_owner_id,observacao,observacao_frete,observacao_interna`;
+    const dealResp = await axios.get(dealUrl, {
+      headers: { Authorization: `Bearer ${hubspotToken}` }
+    });
+
+    const props = dealResp.data.properties;
+
+    // 2. Extrair CodeEmp
+    const codEmpRaw = props.codemp_sankhya || props.sankhya_codemp || "1";
+    const codEmp = toInt("codEmp", codEmpRaw) || 1;
+
+    // 3. Buscar CodParc (Company)
+    const companyAssocUrl = `https://api.hubspot.com/crm/v3/objects/deals/${dealId}/associations/companies`;
+    const companyAssocResp = await axios.get(companyAssocUrl, {
+      headers: { Authorization: `Bearer ${hubspotToken}` }
+    });
+
+    const companyId = companyAssocResp.data.results?.[0]?.id;
+    if (!companyId) {
+      return res.status(400).json({
+        success: false,
+        error: "Deal nÃ£o possui Company/Parceiro associado"
+      });
+    }
+
+    const companyResp = await axios.get(
+      `https://api.hubspot.com/crm/v3/objects/companies/${companyId}?properties=sankhya_codparc,codparc`,
+      { headers: { Authorization: `Bearer ${hubspotToken}` } }
+    );
+
+    const codParcRaw = companyResp.data.properties.sankhya_codparc || companyResp.data.properties.codparc;
+    const codParc = toInt("codParc", codParcRaw);
+
+    if (!codParc) {
+      return res.status(400).json({
+        success: false,
+        error: "Company nÃ£o possui cÃ³digo Sankhya (sankhya_codparc ou codparc)"
+      });
+    }
+
+    // 4. Buscar defaults do Parceiro (TGFPAR) para simular comportamento da tela
+    console.log(`[GENERATE-HEADER] Buscando defaults do Parceiro ${codParc}...`);
+    const parcQuery = {
+      serviceName: "DbExplorerSP.executeQuery",
+      requestBody: {
+        sql: `SELECT CODTIPVENDA, CODVEND, AD_CODNAT FROM TGFPAR WHERE CODPARC = ${codParc}`
+      }
+    };
+
+    // Default values
+    let parcTipVenda = null;
+    let parcVend = null;
+    let parcNat = null;
+
+    try {
+      const parcResp = await postGatewayWithRetry(parcQuery);
+      const row = parcResp.data.responseBody?.rows?.[0];
+      if (row) {
+        parcTipVenda = row[0];
+        parcVend = row[1];
+        parcNat = row[2]; // Custom field often used for default nature
+        console.log(`[GENERATE-HEADER] Defaults do Parceiro: CODTIPVENDA=${parcTipVenda}, CODVEND=${parcVend}, AD_CODNAT=${parcNat}`);
+      }
+    } catch (e) {
+      console.warn(`[GENERATE-HEADER] Erro ao buscar defaults do parceiro: ${e.message}`);
+    }
+
+    // 5. Preparar dados do cabeÃ§alho (Prioridade: Deal > Parceiro > Default System)
+    const codTipOperRaw = props.dealtype;
+    const codTipOper = toInt("codTipOper", codTipOperRaw) || 999;
+
+    // Tipo de NegociaÃ§Ã£o: Deal prop > Parceiro default > 503
+    const codTipVendaRaw = props.tipo_negociacao;
+    const codTipVenda = toInt("codTipVenda", codTipVendaRaw) || (parcTipVenda ? parseInt(parcTipVenda) : 503);
+
+    // Vendedor: HubSpot Owner mapped > Parceiro default > 0
+    // const ownerIdRaw = props.hubspot_owner_id;
+    // const ownerId = ownerIdRaw ? parseInt(ownerIdRaw) : null;
+    const codVend = parcVend ? parseInt(parcVend) : 0;
+
+    // Natureza: Se vier do parceiro, usamos no UPDATE depois
+
+    // Data de NegociaÃ§Ã£o: Hoje
+    const dtNeg = new Date().toLocaleDateString('pt-BR'); // DD/MM/YYYY
+
+    console.log(`[GENERATE-HEADER] Criando cabeÃ§alho final:`, {
+      CODEMP: codEmp,
+      CODPARC: codParc,
+      CODTIPOPER: codTipOper,
+      CODTIPVENDA: codTipVenda,
+      CODVEND: codVend,
+      DTNEG: dtNeg
+    });
+
+    // 6. Criar cabeÃ§alho via CRUD (apenas campos obrigatÃ³rios)
+    const token = await getAccessToken();
+
+    const INCLUIR_NOTA_URL = `${baseUrl}/gateway/v1/mgecom/service.sbr?serviceName=CACSP.incluirNota&outputType=json`;
+
+    const notaBody = {
+      requestBody: {
+        nota: {
+          cabecalho: {
+            NUNOTA: { "$": "" },
+            CODEMP: { "$": codEmp },
+            CODPARC: { "$": codParc },
+            CODTIPOPER: { "$": codTipOper },
+            CODEMPNEGOC: { "$": codEmp },
+            CODVEND: { "$": codVend },
+            TIPMOV: { "$": "P" },
+            DTNEG: { "$": dtNeg },
+            CODCENCUS: { "$": 101002 },
+            CODTIPVENDA: { "$": codTipVenda },
+            CODNAT: { "$": parcNat || "101001" },
+            OBSERVACAO: { "$": props.observacao || "" },
+            AD_OBSFRETE: { "$": props.observacao_frete || "" },
+            AD_OBSERVACAOINTERNA: { "$": props.observacao_interna || "" }
+          }
+        }
+      }
+    };
+    const createResp = await axios.post(
+      INCLUIR_NOTA_URL,
+      notaBody,
+      {
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    console.log(`[GENERATE-HEADER] CACSP response:`, JSON.stringify(createResp.data));
+
+    if (createResp.data.status !== "1") {
+      throw new Error(`Erro ao criar cabeÃ§alho: ${JSON.stringify(createResp.data)}`);
+    }
+
+    // 7. Extrair NUNOTA do response
+    const nunota = parseInt(createResp.data.responseBody?.pk?.NUNOTA?.$ || createResp.data.responseBody?.nota?.cabecalho?.NUNOTA?.$);
+
+    if (!nunota) {
+      throw new Error("NUNOTA nÃ£o retornado apÃ³s criaÃ§Ã£o");
+    }
+
+    console.log(`[GENERATE-HEADER] CabeÃ§alho criado: NUNOTA ${nunota}`);
+
+    // 8. Buscar CODNAT do orÃ§amento criado (auto-preenchido pelo Sankhya)
+    const queryPayload = {
+      serviceName: "DbExplorerSP.executeQuery",
+      requestBody: {
+        sql: `SELECT CODNAT FROM TGFCAB WHERE NUNOTA = ${nunota}`
+      }
+    };
+
+    const queryResp = await axios.post(
+      `${baseUrl}/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json`,
+      queryPayload,
+      {
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    const codNat = queryResp.data.responseBody?.rows?.[0]?.[0];
+
+    if (!codNat) {
+      console.warn(`[GENERATE-HEADER] CODNAT nÃ£o encontrado para NUNOTA ${nunota}`);
+    }
+
+    console.log(`[GENERATE-HEADER] CODNAT auto-preenchido: ${codNat}`);
+
+    // 9. Atualizar propriedades do Deal no HubSpot
+    const updateProps = {
+      orcamento_sankhya: nunota.toString(),
+      natureza_id: codNat ? codNat.toString() : "101001" // fallback
+    };
+
+    await axios.patch(
+      `https://api.hubapi.com/crm/v3/objects/deals/${dealId}`,
+      { properties: updateProps },
+      { headers: { Authorization: `Bearer ${hubspotToken}` } }
+    );
+
+    console.log(`[GENERATE-HEADER] Deal ${dealId} atualizado com NUNOTA ${nunota} e natureza_id ${codNat}`);
+
+    // 10. Retornar sucesso
+    res.json({
+      success: true,
+      nunota,
+      codnat: codNat,
+      message: `CabeÃ§alho criado com sucesso! NUNOTA: ${nunota}, CODNAT: ${codNat}`
+    });
+
+  } catch (error) {
+    console.error(`[GENERATE-HEADER ERROR] ${error.message}`, error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: error.response?.data
+    });
+  }
+});
+
+// ============================================================
+// ðŸ” SEARCH PRODUCTS: Search Sankhya products for adding
+// ============================================================
+app.post("/hubspot/products/search", async (req, res) => {
+  try {
+    const { query } = req.body;
+    if (!query) return res.status(400).json({ success: false, error: "Query Ã© obrigatÃ³ria" });
+
+    console.log(`[PROD-SEARCH] Buscando produtos no HubSpot CRM para: "${query}"...`);
+    const hubspotToken = process.env.HUBSPOT_ACCESS_TOKEN;
+
+    const searchUrl = "https://api.hubapi.com/crm/v3/objects/products/search";
+    const searchBody = {
+      filterGroups: [
+        {
+          filters: [
+            { propertyName: "name", operator: "CONTAINS_TOKEN", value: `*${query}*` }
+          ]
+        },
+        {
+          filters: [
+            { propertyName: "description", operator: "CONTAINS_TOKEN", value: `*${query}*` }
+          ]
+        },
+        {
+          filters: [
+            { propertyName: "hs_sku", operator: "EQ", value: query }
+          ]
+        }
+      ],
+      properties: ["name", "hs_sku", "description", "sankhya_product_id"],
+      limit: 20
+    };
+
+    const searchResp = await axios.post(searchUrl, searchBody, {
+      headers: { Authorization: `Bearer ${hubspotToken}`, "Content-Type": "application/json" }
+    });
+
+    const products = (searchResp.data?.results || []).map(p => ({
+      codProd: p.properties.hs_sku || p.properties.sankhya_product_id,
+      hs_product_id: p.id,
+      name: p.properties.name,
+      controle: "" // NÃ£o disponÃ­vel no Hubspot sem consulta ao estoque
+    })).filter(p => p.codProd); // Garantir que temos o cÃ³digo para adicionar
+
+    console.log(`[PROD-SEARCH] Encontrados ${products.length} produtos no HubSpot.`);
+    res.json({ success: true, products });
+  } catch (error) {
+    console.error(`[PROD-SEARCH ERROR] ${error.response?.data ? JSON.stringify(error.response.data) : error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================
+// âž• ADD LINE ITEM: Create line item in HubSpot
+// ============================================================
+app.post("/hubspot/line-item/add", async (req, res) => {
+  try {
+    const { dealId, codProd, hs_product_id, quantity, price, name } = req.body;
+    if (!dealId || !codProd) return res.status(400).json({ success: false, error: "dealId e codProd são obrigatórios" });
+
+    const hubspotToken = requireEnv("HUBSPOT_ACCESS_TOKEN");
+
+    console.log(`[ADD-ITEM] Adicionando produto ${codProd} (HSID: ${hs_product_id || 'N/A'}) ao Deal ${dealId}...`);
+
+    // 1. Criar Line Item
+    const createResp = await axios.post("https://api.hubapi.com/crm/v3/objects/line_items", {
+      properties: {
+        hs_product_id: hs_product_id || undefined,
+        name: name || `Produto ${codProd}`,
+        quantity: quantity || 1,
+        price: price || 0,
+        sankhya_codprod: codProd.toString(),
+        codprod: codProd.toString(), // Tenta ambos os nomes comuns
+        hs_sku: codProd.toString()   // Backup se não houver hs_product_id
+      }
+    }, { headers: { Authorization: `Bearer ${hubspotToken}` } });
+
+    const lineItemId = createResp.data.id;
+
+    // 2. Associar ao Deal
+    await axios.put(`https://api.hubapi.com/crm/v3/objects/line_items/${lineItemId}/associations/deals/${dealId}/line_item_to_deal`, {}, {
+      headers: { Authorization: `Bearer ${hubspotToken}` }
+    });
+
+    res.json({ success: true, lineItemId });
+  } catch (error) {
+    console.error(`[ADD-ITEM ERROR] ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================
+// ðŸ“‘ DUPLICATE LINE ITEM: Clone existing line item
+// ============================================================
+app.post("/hubspot/duplicate-line-item", async (req, res) => {
+  try {
+    const { dealId, lineItemId } = req.body;
+    if (!dealId || !lineItemId) return res.status(400).json({ success: false, error: "dealId e lineItemId sÃ£o obrigatÃ³rios" });
+
+    const hubspotToken = requireEnv("HUBSPOT_ACCESS_TOKEN");
+
+    console.log(`[DUPLICATE-ITEM] Duplicando item ${lineItemId} no Deal ${dealId}...`);
+
+    // 1. Buscar propriedades do item original
+    const getResp = await axios.get(`https://api.hubapi.com/crm/v3/objects/line_items/${lineItemId}?properties=name,quantity,price,sankhya_codprod,codprod,hs_product_id,hs_sku`, {
+      headers: { Authorization: `Bearer ${hubspotToken}` }
+    });
+    const props = getResp.data.properties;
+
+    // 2. Criar novo item
+    const createResp = await axios.post("https://api.hubapi.com/crm/v3/objects/line_items", {
+      properties: {
+        name: props.name,
+        quantity: props.quantity,
+        price: props.price,
+        hs_product_id: props.hs_product_id,
+        sankhya_codprod: props.sankhya_codprod || props.codprod || props.hs_sku,
+        codprod: props.sankhya_codprod || props.codprod || props.hs_sku,
+        hs_sku: props.hs_sku || props.sankhya_codprod || props.codprod
+      }
+    }, { headers: { Authorization: `Bearer ${hubspotToken}` } });
+
+    const newLineItemId = createResp.data.id;
+
+    // 3. Associar novo item ao Deal
+    await axios.put(`https://api.hubapi.com/crm/v3/objects/line_items/${newLineItemId}/associations/deals/${dealId}/line_item_to_deal`, {}, {
+      headers: { Authorization: `Bearer ${hubspotToken}` }
+    });
+
+    res.json({ success: true, newLineItemId });
+  } catch (error) {
+    console.error(`[DUPLICATE-ITEM ERROR] ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================
+// 🗑️ DELETE LINE ITEM: Remove line item from HubSpot
+// ============================================================
+app.delete("/hubspot/line-item/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const hubspotToken = requireEnv("HUBSPOT_ACCESS_TOKEN");
+    console.log(`[DELETE-ITEM] Removendo item ${id}...`);
+    await axios.delete(`https://api.hubapi.com/crm/v3/objects/line_items/${id}`, {
+      headers: { Authorization: `Bearer ${hubspotToken}` }
+    });
+    res.json({ success: true });
+  } catch (error) {
+    console.error(`[DELETE-ITEM ERROR] ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================
+// 📦 PRODUCT CONTROLS: Fetch available batches/lots for a product
+// ============================================================
+app.get("/hubspot/products/controls/:codProd", async (req, res) => {
+  try {
+    const { codProd } = req.params;
+    const { codEmp } = req.query;
+    console.log(`[PROD-CONTROLS] Buscando lotes para produto ${codProd}...`);
+    const token = await getAccessToken();
+    let sql = `
+      SELECT CONTROLE, SUM(ESTOQUE - RESERVADO) as SALDO 
+      FROM TGFEST 
+      WHERE CODPROD = ${codProd} 
+        ${codEmp ? `AND CODEMP = ${codEmp}` : ''}
+      GROUP BY CONTROLE
+      HAVING SUM(ESTOQUE - RESERVADO) > 0
+      ORDER BY CONTROLE
+    `;
+    const queryResp = await axios.post(`${baseUrl}/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json`, {
+      serviceName: "DbExplorerSP.executeQuery",
+      requestBody: { sql }
+    }, { headers: { Authorization: `Bearer ${token}` } });
+    const rows = queryResp.data?.responseBody?.rows || [];
+    const controls = rows.map(r => ({ controle: r[0], saldo: parseFloat(r[1]) }));
+    res.json({ success: true, controls });
+  } catch (error) {
+    console.error(`[PROD-CONTROLS ERROR] ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================================
+// 🔄 UPDATE LINE ITEM: Update properties of a line item
+// ============================================================
+app.post("/hubspot/line-item/update", async (req, res) => {
+  try {
+    const { lineItemId, properties } = req.body;
+    if (!lineItemId || !properties) return res.status(400).json({ success: false, error: "lineItemId e properties são obrigatórios" });
+    const hubspotToken = requireEnv("HUBSPOT_ACCESS_TOKEN");
+    console.log(`[UPDATE-ITEM] Atualizando item ${lineItemId}...`);
+    await axios.patch(`https://api.hubapi.com/crm/v3/objects/line_items/${lineItemId}`, {
+      properties
+    }, {
+      headers: { Authorization: `Bearer ${hubspotToken}`, "Content-Type": "application/json" }
+    });
+    res.json({ success: true });
+  } catch (error) {
+    console.error(`[UPDATE-ITEM ERROR] ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.listen(Number(process.env.PORT || 3000), () => {
-  console.log(`🚀 API: http://localhost:${process.env.PORT || 3000}`);
+  console.log(`ðŸš€ API: http://localhost:${process.env.PORT || 3000}`);
   console.log("--- SYSTEM READY (v1.3 - Product Sync Support) ---");
 });

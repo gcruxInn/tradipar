@@ -9,30 +9,28 @@ Núcleo da integração "Set and Forget". Responsável pelo sync pesado de dados
 - **Local:** Rodando dentro do Sankhya (Actions/Scheduled).
 - **Recursos:** Sync de Produtos, Importação de Clientes, Diagnóstico de Schema.
 
-### 2. [Node.js Proxy (Oracle Cloud)](file:///./aws-server-alef/)
+### 2. [Node.js Proxy (AWS Server Alef)](file:///./aws-server-alef/)
 Camada intermediária resiliente para consultas em tempo real e orquestração de pedidos.
-- **Local:** Oracle Cloud (Container Docker).
+- **Local:** VPS/Dedicated (Docker).
 - **Recursos:**
-    - Consulta Multi-Item (Preço e Estoque por produto).
-    - Contexto de Filial ("Empresa X").
-    - Write-back de Amount.
-    - Gatilho de conversão para Pedido.
-    - **Self-Healing Session Recovery**.
+    - **Gestão de Itens de Linha**: Endpoints CRUD para Adicionar, Duplicar e Excluir itens no Deal.
+    - **Pesquisa Híbrida**: Integração com HubSpot Product Library mantendo o vínculo (`codProd`) com o Sankhya.
+    - **Rentabilidade & Lotes**: Consulta de controles (lotes) em tempo real e cálculo de lucratividade via Sankhya.
+    - **Self-Healing Session Recovery**: Auto-login no Sankhya para evitar falhas por timeout.
 
 ### 3. [HubSpot UI Extension](file:///./sankhya-integration-innleaders/)
 Interface do usuário rica integrada diretamente ao Deal Record (CRM Card).
-- **Local:** HubSpot Cloud (Private App Publico).
 - **Recursos:**
-    - Visualização de múltiplos itens em Accordion.
-    - Totais Gerais (PV1/PV2/PV3) com "One-Click Apply".
-    - Validação de Estoque (Bloqueio de Faturamento).
-    - Status Amigável e Auto-Refresh.
+    - **Seleção Dinâmica de Lote**: Dropdown alimentado por estoque real e controle.
+    - **Ações de Item**: Duplicação e exclusão rápida diretamente na tabela de itens.
+    - **Preço Personalizado**: Modal para ajuste manual de preços unitários ou totais.
+    - **Pesquisa de Produtos**: Busca integrada nos produtos sincronizados do HubSpot.
 
 ## Princípios de Arquitetura
 
-- **Resiliência (Self-Healing)**: O Proxy detecta sessões Sankhya expiradas (Status 3/401) e renova o token automaticamente sem falhar a requisição do usuário.
-- **Segurança**: Credenciais não expostas no Frontend. Variáveis de ambiente (`.env`) gerenciadas seguramente no container.
-- **UX Premium**: Design responsivo com feedback imediato (Optimistic UI) e prevenção de erros (Stocks Guards).
+- **Resiliência (Self-Healing)**: O Proxy detecta sessões Sankhya expiradas e renova o token automaticamente.
+- **Sincronização de Estado**: Atualização instantânea da UI (Optimistic UI) combinada com o `refreshObjectProperties` do HubSpot.
+- **Estabilidade**: Componentes refatorados para seguir as `best practices` das Extensões de UI da HubSpot (modais de raiz, hooks otimizados).
 
 ## Build & Deploy
 
@@ -42,7 +40,7 @@ Interface do usuário rica integrada diretamente ao Deal Record (CRM Card).
 ```
 
 ### Proxy (Node.js/Docker)
-Rodando no servidor Oracle Cloud em `~/htdocs/api.gcrux.com/aws-server-alef/`:
+Rodando no servidor em `~/htdocs/api.gcrux.com/aws-server-alef/`:
 ```bash
 # Sincronizar arquivos para o servidor
 scp aws-server-alef/index.js user@host:~/path/
@@ -50,7 +48,6 @@ scp aws-server-alef/index.js user@host:~/path/
 # Rebuildar e subir container
 sudo docker compose up -d --build
 ```
-*(Consulte `aws-server-alef/README.md` para detalhes de `.env`)*
 
 ### Frontend (HubSpot Extension)
 ```bash
@@ -69,12 +66,13 @@ tradipar/
 └── README.md
 ```
 
-## Status Atual (Phase 5.2 Concluída)
-- [x] Multi-Item Support (Preço/Estoque N:N).
-- [x] UX Avançada (Totais, Accordion, Auto-Refresh).
-- [x] Deploy Containerizado seguro.
+## Status Atual (Phase 13 Concluída) ✅
+- [x] Multi-Item CRUD (Adição/Duplicação/Exclusão).
+- [x] Seleção de Lote Dinâmica via Sankhya.
+- [x] Pesquisa de Produtos via HubSpot Library.
+- [x] Estabilidade de UI & Refatoração (Fix React Crash #310).
 
-## Próximos Passos (Phase 6)
-- Workflow para chamar API na criação do Deal.
-- Popular campos de preço customizados automaticamente.
-- Sync reverso de Contatos/Empresas.
+## Próximos Passos (Phase 14)
+- Automações de Workflow para criação de Deals via API.
+- Melhoria no log de auditoria de conversões para Pedido.
+- Sincronização de propriedades de frete baseada em tabelas de frete Sankhya.

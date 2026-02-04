@@ -1,0 +1,4 @@
+<module xmlns="http://www.sankhya.com.br/module" name="HubSpotExtension">
+    <!-- Serviço Universal -->
+    <service name="HubSpot.execute" provider="br.com.innleaders.hubspot.HubSpotController"/>
+</module>
