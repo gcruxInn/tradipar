@@ -33,8 +33,20 @@ const STAGE_PEDIDO = "presentationscheduled"; // Pagamento (Gatilho B2B)
 
 function requireEnv(name) {
   const v = process.env[name];
-  if (!v) throw new Error(`VariÃ¡vel de ambiente ausente: ${name}`);
+  if (!v) throw new Error(`Variável de ambiente ausente: ${name}`);
   return v;
+}
+
+// --- Helper: Fix Encoding (ISO-8859-1 -> UTF-8) ---
+function fixEncoding(str) {
+  if (!str) return str;
+  try {
+    // Detect double-encoded UTF-8 (common in legacy aggregators)
+    if (str.match(/[ÃÂ][\x80-\xBF]/)) {
+      return Buffer.from(str, 'binary').toString('utf8');
+    }
+  } catch (e) { return str; }
+  return str;
 }
 
 function toInt(name, value) {
@@ -137,7 +149,7 @@ async function getDealSankhyaContext(objectId, token) {
         if (codProd) {
           items.push({
             id,
-            name: lp.name || `Item ${id}`,
+            name: fixEncoding(lp.name) || `Item ${id}`,
             codProd: toInt("codProd", codProd),
             quantity: Number(lp.quantity || 0),
             currentPrice: lp.price ? Number(lp.price) : null
@@ -207,7 +219,15 @@ async function getDealSankhyaContext(objectId, token) {
   }
 
   console.log(`[DISCOVERY] Raw Data: Deal=${objectId}, Emp=${codEmp}, Parc=${codParcRaw}, Items=${items.length}, QuoteAssoc=${activeQuote?.id || 'Nenhuma'}, PropOrcamento=${props.orcamento_sankhya || 'Nenhum'}`);
-  console.log(`[DISCOVERY] Final Context: CodParc=${codParcRaw}, CodEmp=${codEmp}, Items=${items.length}, nunota=${props.orcamento_sankhya}`);
+  // LÓGICA DE VÍNCULO: Priorizar orcamento_sankhya (link definitivo)
+  // Se não houver, tentar nunota (legado/temporário)
+  const orcamentoSankhya = toInt("orcamento_sankhya", props.orcamento_sankhya || props.sankhya_orcamento);
+  const nunotaFound = toInt("nunota", props.nunota);
+
+  const nunota = orcamentoSankhya || nunotaFound;
+
+
+  console.log(`[DISCOVERY] Final Context: CodParc=${codParcRaw}, CodEmp=${codEmp}, Items=${items.length}, Link=${nunota} (Src: ${orcamentoSankhya ? 'Orcamento' : 'NuNota'})`);
 
   return {
     objectId,

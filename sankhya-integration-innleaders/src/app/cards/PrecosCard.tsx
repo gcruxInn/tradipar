@@ -118,6 +118,18 @@ const PrecosCard = ({ context, onRefreshProperties }: PrecosCardProps) => {
         } catch (e) { console.error("Error fetching controls", e); }
     };
 
+    // Auto-select single batch via Effect to avoid scope issues
+    useEffect(() => {
+        if (!data?.items) return;
+        data.items.forEach(item => {
+            const controls = availableControls[item.codProd];
+            if (controls && controls.length === 1 && !item.sankhyaControle) {
+                const singleControl = controls[0].controle;
+                handleUpdateItemControl(item.id, singleControl);
+            }
+        });
+    }, [availableControls]);
+
     // Custom Price State
     const [customPriceItemId, setCustomPriceItemId] = useState<string | null>(null);
     const [customPriceValue, setCustomPriceValue] = useState<number | undefined>(undefined);
@@ -656,17 +668,20 @@ const PrecosCard = ({ context, onRefreshProperties }: PrecosCardProps) => {
                                     <Tag variant={item.stock < item.quantity ? "error" : "success"}>Estoque SNK: {item.stock}</Tag>
                                 </TableCell>
                                 <TableCell>
-                                    <Select
-                                        label=""
-                                        name={`ctrl-${item.id}`}
-                                        placeholder={item.sankhyaControle || "Selecione..."}
-                                        value={item.sankhyaControle}
-                                        options={(availableControls[item.codProd] || []).map(c => ({
-                                            label: `${c.controle} (Disp: ${c.saldo})`,
-                                            value: c.controle
-                                        }))}
-                                        onChange={(val) => val && handleUpdateItemControl(item.id, val.toString())}
-                                    />
+                                    {availableControls[item.codProd] ? (
+                                        availableControls[item.codProd].length > 0 ? (
+                                            <Select
+                                                name={`lote-${item.id}`}
+                                                placeholder="Selecione..."
+                                                options={availableControls[item.codProd].map(c => ({
+                                                    label: `${c.controle} (${c.saldo})`,
+                                                    value: c.controle
+                                                }))}
+                                                value={item.sankhyaControle || ""}
+                                                onChange={(val) => handleUpdateItemControl(item.id, val)}
+                                            />
+                                        ) : <Tag variant="warning">Sem Estoque</Tag>
+                                    ) : <LoadingSpinner size="sm" />}
                                 </TableCell>
                                 <TableCell>
                                     <Flex direction="column" gap="xs">
@@ -693,12 +708,17 @@ const PrecosCard = ({ context, onRefreshProperties }: PrecosCardProps) => {
                                         >
                                             ✍️ Customizar
                                         </Button>
+                                        <Text variant="microcopy">Total: {formatCurrency(selectedPrices[item.id] || (item.currentPrice || 0) * item.quantity)}</Text>
                                     </Flex>
                                 </TableCell>
                                 <TableCell>
-                                    <Tag variant={(item.sankhyaProfitability ?? 0) > 4 ? "success" : "error"}>
-                                        {item.sankhyaProfitability !== undefined ? `${item.sankhyaProfitability.toFixed(1)}%` : "-"}
-                                    </Tag>
+                                    {item.sankhyaProfitability !== undefined ? (
+                                        <Tag variant={item.sankhyaProfitability > 0 ? "success" : "warning"}>
+                                            {item.sankhyaProfitability}%
+                                        </Tag>
+                                    ) : (
+                                        <Tag variant="info">Aguardando</Tag>
+                                    )}
                                 </TableCell>
                             </TableRow>
                         ))}
@@ -713,16 +733,18 @@ const PrecosCard = ({ context, onRefreshProperties }: PrecosCardProps) => {
             <Divider />
 
             {/* 5. RENTABILIDADE GERAL */}
-            {quoteStatus?.hasQuote && (
-                <Accordion title="📊 Rentabilidade Geral" defaultOpen={false}>
-                    {quoteStatus.profitability ? (
-                        <Flex direction="column" gap="xs">
-                            <Flex justify="between"><Text>Faturamento:</Text><Text format={{ fontWeight: "bold" }}>{formatCurrency(quoteStatus.profitability.faturamento)}</Text></Flex>
-                            <Flex justify="between"><Text>Lucro:</Text><Tag variant={quoteStatus.isRentavel ? "success" : "error"}>{formatCurrency(quoteStatus.profitability.lucro)} ({quoteStatus.profitability.percentLucro?.toFixed(1)}%)</Tag></Flex>
-                        </Flex>
-                    ) : <Text variant="microcopy">Carregando...</Text>}
-                </Accordion>
-            )}
+            {
+                quoteStatus?.hasQuote && (
+                    <Accordion title="📊 Rentabilidade Geral" defaultOpen={false}>
+                        {quoteStatus.profitability ? (
+                            <Flex direction="column" gap="xs">
+                                <Flex justify="between"><Text>Faturamento:</Text><Text format={{ fontWeight: "bold" }}>{formatCurrency(quoteStatus.profitability.faturamento)}</Text></Flex>
+                                <Flex justify="between"><Text>Lucro:</Text><Tag variant={quoteStatus.isRentavel ? "success" : "error"}>{formatCurrency(quoteStatus.profitability.lucro)} ({quoteStatus.profitability.percentLucro?.toFixed(1)}%)</Tag></Flex>
+                            </Flex>
+                        ) : <Text variant="microcopy">Carregando...</Text>}
+                    </Accordion>
+                )
+            }
 
             {hasStockIssue && <Alert title="Corte de Estoque" variant="error">Há itens com estoque insuficiente.</Alert>}
 
@@ -752,26 +774,28 @@ const PrecosCard = ({ context, onRefreshProperties }: PrecosCardProps) => {
             </Flex>
 
             {/* Modal de Preço Personalizado na Raiz */}
-            {customPriceItemId && (
-                <Modal id="modal-custom-price" title="Preço Personalizado">
-                    <ModalBody>
-                        <Flex direction="column" gap="md">
-                            <Text>Insira o valor total desejado para este item. O preço unitário será calculado automaticamente.</Text>
-                            <NumberInput
-                                label="Valor Total (Item)"
-                                name="custom-total-value"
-                                value={customPriceValue}
-                                onChange={setCustomPriceValue}
-                            />
-                            <Flex direction="row" gap="sm">
-                                <Button variant="primary" onClick={handleApplyCustomPrice}>Salvar e Aplicar</Button>
-                                <Button variant="secondary" onClick={() => setCustomPriceItemId(null)}>Cancelar</Button>
+            {
+                customPriceItemId && (
+                    <Modal id="modal-custom-price" title="Preço Personalizado">
+                        <ModalBody>
+                            <Flex direction="column" gap="md">
+                                <Text>Insira o valor total desejado para este item. O preço unitário será calculado automaticamente.</Text>
+                                <NumberInput
+                                    label="Valor Total (Item)"
+                                    name="custom-total-value"
+                                    value={customPriceValue}
+                                    onChange={setCustomPriceValue}
+                                />
+                                <Flex direction="row" gap="sm">
+                                    <Button variant="primary" onClick={handleApplyCustomPrice}>Salvar e Aplicar</Button>
+                                    <Button variant="secondary" onClick={() => setCustomPriceItemId(null)}>Cancelar</Button>
+                                </Flex>
                             </Flex>
-                        </Flex>
-                    </ModalBody>
-                </Modal>
-            )}
-        </Flex>
+                        </ModalBody>
+                    </Modal>
+                )
+            }
+        </Flex >
     );
 };
 
