@@ -132,7 +132,7 @@ async function getDealSankhyaContext(objectId, token) {
     // Fetch details in batches or parallel
     await Promise.all(lineItemIds.map(async (id) => {
       try {
-        const itemUrl = `https://api.hubspot.com/crm/v3/objects/line_items/${id}?properties=sankhya_codprod,codprod,hs_product_id,quantity,name,price,hs_sku`;
+        const itemUrl = `https://api.hubspot.com/crm/v3/objects/line_items/${id}?properties=sankhya_codprod,codprod,hs_product_id,quantity,name,price,hs_sku,sankhya_controle,controle`;
         const resp = await axios.get(itemUrl, { headers: { Authorization: `Bearer ${token}` } });
         const lp = resp.data.properties;
 
@@ -152,7 +152,9 @@ async function getDealSankhyaContext(objectId, token) {
             name: fixEncoding(lp.name) || `Item ${id}`,
             codProd: toInt("codProd", codProd),
             quantity: Number(lp.quantity || 0),
-            currentPrice: lp.price ? Number(lp.price) : null
+            quantity: Number(lp.quantity || 0),
+            currentPrice: lp.price ? Number(lp.price) : null,
+            sankhyaControle: lp.sankhya_controle || lp.controle || null // Persist Lote
           });
         } else {
           console.warn(`[DISCOVERY] Item ${id} não possui CODPROD definido (sankhya_codprod, codprod ou hs_sku).`);
@@ -229,6 +231,10 @@ async function getDealSankhyaContext(objectId, token) {
 
   console.log(`[DISCOVERY] Final Context: CodParc=${codParcRaw}, CodEmp=${codEmp}, Items=${items.length}, Link=${nunota} (Src: ${orcamentoSankhya ? 'Orcamento' : 'NuNota'})`);
 
+  // FIX ENCODING: Propriedades de texto que podem vir corrompidas do HubSpot/IntegraÃ§Ã£o
+  if (props.fase_negociacao) props.fase_negociacao = fixEncoding(props.fase_negociacao);
+  if (props.dealstage) props.dealstage = fixEncoding(props.dealstage);
+
   return {
     objectId,
     codParc: toInt("codParc", codParcRaw),
@@ -243,6 +249,10 @@ async function getDealSankhyaContext(objectId, token) {
 
 const baseUrl = requireEnv("SANKHYA_BASE_URL");
 const GATEWAY_EXECUTE_QUERY_URL = `${baseUrl}/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json`;
+
+// --- CACHE (Simple In-Memory) ---
+const STK_CACHE = new Map();
+const CACHE_TTL_MS = 5000;
 
 async function postGatewayWithRetry(body) {
   let token = await getAccessToken();
@@ -391,27 +401,61 @@ async function consultaPreco(codProd, codParc, codEmp, seqPv) {
   return parseDbExplorerFirstValue(response.data);
 }
 
+// Optimized: Fetch all 3 prices in one query
+async function consultaTodosPrecos(codProd, codParc, codEmp) {
+  const sql = `
+    SELECT 
+      AD_PRECO_TRADIPAR(${codProd}, ${codParc}, ${codEmp}, 1) AS PV1,
+      AD_PRECO_TRADIPAR(${codProd}, ${codParc}, ${codEmp}, 2) AS PV2,
+      AD_PRECO_TRADIPAR(${codProd}, ${codParc}, ${codEmp}, 3) AS PV3
+    FROM DUAL
+  `;
+  const response = await postGatewayWithRetry({ requestBody: { sql } });
+
+  // Custom parsing because it returns one row with 3 columns
+  const rb = response.data?.responseBody;
+  let row = null;
+  if (rb?.rows && rb.rows.length) row = rb.rows[0];
+  else if (rb?.resultSet?.rows && rb.resultSet.rows.length) {
+    // Helper to extract value from object format { $: "value" }
+    const r = rb.resultSet.rows[0];
+    row = [r.PV1?.$ || r.PV1, r.PV2?.$ || r.PV2, r.PV3?.$ || r.PV3];
+  }
+
+  if (row) {
+    return {
+      pv1: Number(row[0] || 0),
+      pv2: Number(row[1] || 0),
+      pv3: Number(row[2] || 0)
+    };
+  }
+  return { pv1: 0, pv2: 0, pv3: 0 };
+}
+
 async function consultaEstoque(codProd, codEmp) {
+  const cacheKey = `${codProd}-${codEmp}`;
+  if (STK_CACHE.has(cacheKey)) {
+    const { val, ts } = STK_CACHE.get(cacheKey);
+    if (Date.now() - ts < CACHE_TTL_MS) return val;
+  }
+
   try {
     const sql = `SELECT SUM(ESTOQUE - RESERVADO) AS DISPONIVEL FROM TGFEST WHERE CODPROD = ${codProd} AND CODEMP = ${codEmp}`;
-    console.log(`[STK] SQL: ${sql}`);
+    // console.log(`[STK] SQL: ${sql}`); // VERBOSE
     const response = await postGatewayWithRetry({ requestBody: { sql } });
 
-    // Debug da resposta crua
-    const rb = response.data?.responseBody;
-    console.log(`[STK] Raw Response: ${JSON.stringify(rb)}`);
+    // Safer parsing
+    let val = 0;
+    try {
+      val = parseDbExplorerFirstValue(response.data) || 0;
+    } catch (e) { console.warn(`[STK] Parse error for ${codProd}:`, e.message); }
 
-    if (Array.isArray(rb?.rows) && rb.rows.length > 0) {
-      const row = rb.rows[0];
-      // DbExplorer retorna array de valores. Se for SELECT SUM... o valor estÃ¡ no Ã­ndice 0
-      const val = Array.isArray(row) ? row[0] : row;
-      return val != null ? Number(val) : 0;
-    }
+    STK_CACHE.set(cacheKey, { val, ts: Date.now() });
+    return val;
 
-    return 0;
-  } catch (err) {
-    console.error(`[STK] Erro: ${err.message}`);
-    return 0;
+  } catch (e) {
+    console.error(`[STK] Error querying stock for ${codProd}:`, e.message);
+    return 0; // Fallback to 0 instead of crash
   }
 }
 
@@ -548,26 +592,38 @@ app.post("/hubspot/prices/deal", async (req, res) => {
     const otherCompany = allCompanies.find(c => c.codEmp !== ctx.codEmp);
     const otherCodEmp = otherCompany?.codEmp;
 
-    // Processar cada item
-    const processedItems = await Promise.all(ctx.items.map(async (item) => {
-      // Buscar preÃ§os e estoque da empresa selecionada
-      const [pv1, pv2, pv3, estoque, estoqueOutraEmpresa] = await Promise.all([
-        consultaPreco(item.codProd, ctx.codParc, ctx.codEmp, 1),
-        consultaPreco(item.codProd, ctx.codParc, ctx.codEmp, 2),
-        consultaPreco(item.codProd, ctx.codParc, ctx.codEmp, 3),
+    // Helper for Concurrency Limiting
+    const processInChunks = async (items, chunkSize, processFn) => {
+      const results = [];
+      for (let i = 0; i < items.length; i += chunkSize) {
+        const chunk = items.slice(i, i + chunkSize);
+        // Process chunk in parallel
+        const chunkResults = await Promise.all(chunk.map(processFn));
+        results.push(...chunkResults);
+      }
+      return results;
+    };
+
+    // Optimization: Process in chunks of 5 items to avoid connection saturation
+    const processedItems = await processInChunks(ctx.items, 5, async (item) => {
+      // Optimized: Fetch prices in 1 call instead of 3
+      const [prices, estoque, estoqueOutraEmpresa] = await Promise.all([
+        consultaTodosPrecos(item.codProd, ctx.codParc, ctx.codEmp),
         consultaEstoque(item.codProd, ctx.codEmp),
         otherCodEmp ? consultaEstoque(item.codProd, otherCodEmp) : Promise.resolve(0),
       ]);
 
       return {
         ...item,
-        prices: { pv1, pv2, pv3 },
+        prices: prices, // Already { pv1, pv2, pv3 }
         stock: estoque,
-        stockContext: empresaNome, // Empresa selecionada
-        stockOther: estoqueOutraEmpresa, // Estoque da outra empresa
+        stockContext: (otherCodEmp && estoqueOutraEmpresa > 0)
+          ? `${empresaNome?.substring(0, 10) || 'A'}: ${estoque} | ${otherCompany?.nomeFantasia?.substring(0, 10) || 'B'}: ${estoqueOutraEmpresa}`
+          : `Estoque SNK: ${estoque}`,
+        stockOther: estoqueOutraEmpresa,
         stockOtherContext: otherCompany?.nomeFantasia || otherCompany?.razaoSocial || "Outra Unidade"
       };
-    }));
+    });
 
     // Verificar corte global (se algum item nÃ£o tem estoque)
     const hasStockCut = processedItems.some(i => i.stock < i.quantity);
@@ -1832,6 +1888,7 @@ app.get("/hubspot/quote-status/:dealId", async (req, res) => {
         profitability,
         profitabilityError,
         isRentavel,
+        recalc_needed: (profitability && profitability.lucro === 0 && profitability.qtdItens > 0),
         buttonAction,
         buttonLabel
       }
@@ -2530,7 +2587,7 @@ app.post("/hubspot/duplicate-line-item", async (req, res) => {
     console.log(`[DUPLICATE-ITEM] Duplicando item ${lineItemId} no Deal ${dealId}...`);
 
     // 1. Buscar propriedades do item original
-    const getResp = await axios.get(`https://api.hubapi.com/crm/v3/objects/line_items/${lineItemId}?properties=name,quantity,price,sankhya_codprod,codprod,hs_product_id,hs_sku`, {
+    const getResp = await axios.get(`https://api.hubapi.com/crm/v3/objects/line_items/${lineItemId}?properties=name,quantity,price,sankhya_codprod,codprod,hs_product_id,hs_sku,cod_parceiro`, {
       headers: { Authorization: `Bearer ${hubspotToken}` }
     });
     const props = getResp.data.properties;
@@ -2544,7 +2601,8 @@ app.post("/hubspot/duplicate-line-item", async (req, res) => {
         hs_product_id: props.hs_product_id,
         sankhya_codprod: props.sankhya_codprod || props.codprod || props.hs_sku,
         codprod: props.sankhya_codprod || props.codprod || props.hs_sku,
-        hs_sku: props.hs_sku || props.sankhya_codprod || props.codprod
+        hs_sku: props.hs_sku || props.sankhya_codprod || props.codprod,
+        cod_parceiro: props.cod_parceiro // Copy CodParceiro explicitly
       }
     }, { headers: { Authorization: `Bearer ${hubspotToken}` } });
 
@@ -2618,10 +2676,28 @@ app.post("/hubspot/line-item/update", async (req, res) => {
   try {
     const { lineItemId, properties } = req.body;
     if (!lineItemId || !properties) return res.status(400).json({ success: false, error: "lineItemId e properties são obrigatórios" });
+
     const hubspotToken = requireEnv("HUBSPOT_ACCESS_TOKEN");
-    console.log(`[UPDATE-ITEM] Atualizando item ${lineItemId}...`);
+
+    console.log(`[DEBUG-WRITE] Update request for ${lineItemId}:`, JSON.stringify(properties));
+
+    // MAPPING: Ensure correct property name for HubSpot
+    // Frontend sends 'sankhya_controle', but we handle 'controle' too just in case
+    const payload = { ...properties };
+
+    // MAPPING CORRECTION: User confirmed internal name is 'controle'
+    // If frontend sends 'sankhya_controle', we MUST map it to 'controle'
+    if (payload.sankhya_controle) {
+      payload.controle = payload.sankhya_controle;
+      // We verify if we should keep sankhya_controle. 
+      // If it doesn't exist in HubSpot updates might confuse it, but usually fine.
+      // Let's explicitly favor 'controle'.
+    }
+
+    console.log(`[DEBUG-WRITE] Final Payload to HubSpot:`, JSON.stringify(payload));
+
     await axios.patch(`https://api.hubapi.com/crm/v3/objects/line_items/${lineItemId}`, {
-      properties
+      properties: payload
     }, {
       headers: { Authorization: `Bearer ${hubspotToken}`, "Content-Type": "application/json" }
     });
