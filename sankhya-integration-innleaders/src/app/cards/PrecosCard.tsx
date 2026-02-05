@@ -28,7 +28,6 @@ import {
     Input,
     SearchInput,
     StepIndicator,
-    Step,
     Tabs,
     Tab,
     Tile,
@@ -59,6 +58,7 @@ interface QuoteStatus {
     profitability?: any;
     profitabilityError?: string;
     statusNota?: string;
+    numnota?: number | null;
 }
 
 interface PrecosResponse {
@@ -125,13 +125,17 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     const [currentStep, setCurrentStep] = useState(0); // 0: Handshake, 1: Items, 2: Checkout
     const [itemsTab, setItemsTab] = useState("list"); // "list" | "add" | "details"
 
-    const fetchControlsForProduct = async (codProd: string) => {
-        if (availableControls[codProd]) return;
+    const fetchControlsForProduct = async (codProd: string, overrideCodEmp?: string | number) => {
+        const targetCodEmp = overrideCodEmp !== undefined ? overrideCodEmp : (data?.codEmp || "");
+        const cacheKey = `${codProd}-${targetCodEmp}`;
+
+        if (availableControls[cacheKey]) return;
+
         try {
-            const resp = await hubspot.fetch(`https://api.gcrux.com/hubspot/products/controls/${codProd}?codEmp=${data?.codEmp || ""}`);
+            const resp = await hubspot.fetch(`https://api.gcrux.com/hubspot/products/controls/${codProd}?codEmp=${targetCodEmp}`);
             const res = await resp.json();
             if (res.success) {
-                setAvailableControls(prev => ({ ...prev, [codProd]: res.controls }));
+                setAvailableControls(prev => ({ ...prev, [cacheKey]: res.controls }));
             }
         } catch (e) { console.error("Error fetching controls", e); }
     };
@@ -140,7 +144,9 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     useEffect(() => {
         if (!data?.items) return;
         data.items.forEach(item => {
-            const controls = availableControls[item.codProd];
+            const currentCodEmp = data?.codEmp || "";
+            const cacheKey = `${item.codProd}-${currentCodEmp}`;
+            const controls = availableControls[cacheKey];
             if (controls && controls.length === 1 && !item.sankhyaControle) {
                 const singleControl = controls[0].controle;
                 handleUpdateItemControl(item.id, singleControl);
@@ -195,14 +201,33 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
     // Initial Load
     useEffect(() => {
-        fetchPrices();
-        fetchQuoteStatus();
+        const loadInitialData = async () => {
+            fetchPrices();
+            fetchQuoteStatus();
+
+            // Explicitly fetch company ID to ensure context for stock tags
+            try {
+                if (actions && actions.fetchCrmObjectProperties) {
+                    const props = await actions.fetchCrmObjectProperties(['codemp_sankhya']);
+                    if (props && props.codemp_sankhya) {
+                        setData(prev => prev ? { ...prev, codEmp: props.codemp_sankhya } : { items: [], currentAmount: "0", currentStage: "", codEmp: props.codemp_sankhya });
+                    }
+                }
+            } catch (e) {
+                console.error("Failed to fetch codemp:", e);
+            }
+        };
+        loadInitialData();
     }, [context.crm.objectId]); // removed onRefreshProperties/actions from dependency to avoid loop
 
     useEffect(() => {
         if (data?.items) {
             data.items.forEach(item => {
-                if (item.codProd) fetchControlsForProduct(item.codProd);
+                if (item.codProd) {
+                    // Fetch stock/controls for BOTH companies to ensure "Emp 2" tag has data
+                    fetchControlsForProduct(item.codProd, "1");
+                    fetchControlsForProduct(item.codProd, "2");
+                }
             });
         }
     }, [data]);
@@ -219,16 +244,27 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         // setError(null); // Keep error visible if any until success
 
         try {
-            const response = await hubspot.fetch("https://api.gcrux.com/hubspot/prices/deal", {
-                method: "POST",
-                body: { objectId: context.crm.objectId }
-            });
+            // Fetch prices and specific deal properties in parallel
+            const [response, props] = await Promise.all([
+                hubspot.fetch("https://api.gcrux.com/hubspot/prices/deal", {
+                    method: "POST",
+                    body: { objectId: context.crm.objectId }
+                }),
+                actions && actions.fetchCrmObjectProperties
+                    ? actions.fetchCrmObjectProperties(['codemp_sankhya'])
+                    : Promise.resolve({})
+            ]);
+
             if (!response.ok) throw new Error(`Erro API: ${response.status}`);
             const result = await response.json();
 
             if (result && result.status === "SUCCESS") {
+                // Use fetched property if available, fallback to backend response
+                const activeCodEmp = props?.codemp_sankhya || result.codEmp;
+                result.codEmp = activeCodEmp;
+
                 // Simple hash check to stop loop
-                const currentHash = JSON.stringify(result.items) + result.currentAmount;
+                const currentHash = JSON.stringify(result.items) + result.currentAmount + activeCodEmp;
                 if (currentHash === lastDataHash.current) {
                     setLoading(false);
                     isFetching.current = false;
@@ -243,12 +279,21 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 const initialTypes: Record<string, string> = {};
                 const initialPrices: Record<string, number> = {};
                 result.items.forEach((item: ItemData) => {
-                    if (item.currentPrice) {
+                    const hasValidPrices = (item.prices.pv1 || 0) > 0 || (item.prices.pv2 || 0) > 0 || (item.prices.pv3 || 0) > 0;
+
+                    if (item.currentPrice !== null && item.currentPrice !== undefined) {
                         initialPrices[item.id] = item.currentPrice * item.quantity;
-                        if (Math.abs(item.currentPrice - (item.prices.pv1 || 0)) < 0.01) initialTypes[item.id] = 'pv1';
+
+                        if (!hasValidPrices) {
+                            initialTypes[item.id] = 'custom';
+                        }
+                        else if (Math.abs(item.currentPrice - (item.prices.pv1 || 0)) < 0.01) initialTypes[item.id] = 'pv1';
                         else if (Math.abs(item.currentPrice - (item.prices.pv2 || 0)) < 0.01) initialTypes[item.id] = 'pv2';
                         else if (Math.abs(item.currentPrice - (item.prices.pv3 || 0)) < 0.01) initialTypes[item.id] = 'pv3';
                         else initialTypes[item.id] = 'custom';
+                    } else if (!hasValidPrices) {
+                        // Default to custom if no current price and no valid tables
+                        initialTypes[item.id] = 'custom';
                     }
                 });
                 setSelectedPriceTypes(prev => ({ ...prev, ...initialTypes })); // Merge to keep user selection if valid
@@ -578,13 +623,23 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     const renderAddItemContent = () => (
         <Flex direction="column" gap="md">
             <Flex direction="column" gap="sm">
-                <SearchInput
-                    label="Busca de Produto"
-                    name="prod-filter"
-                    placeholder="Buscar por código ou nome (mín 3 letras)..."
+                <Select
+                    label="Buscar Produto"
+                    name="prod-search"
+                    placeholder="Digite para buscar..."
+                    options={searchResults.map((p: any) => ({
+                        label: `[${p.codProd}] ${p.name}${p.controle ? ` (Controle: ${p.controle})` : ""}`,
+                        value: p.codProd.toString()
+                    }))}
                     onInput={(val: string) => {
                         setSearchTerm(val);
                         handleSearchProducts(val);
+                    }}
+                    onChange={(val: any) => {
+                        if (val) {
+                            const prod = searchResults.find((r: any) => r.codProd.toString() === val.toString());
+                            setSelectedProduct(prod);
+                        }
                     }}
                 />
 
@@ -593,22 +648,6 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 )}
 
                 {searching && <LoadingSpinner label="Buscando produtos..." size="sm" />}
-
-                <Select
-                    label="Selecionar Resultado"
-                    name="prod-search"
-                    placeholder="Selecione o produto..."
-                    options={searchResults.map((p: any) => ({
-                        label: `[${p.codProd}] ${p.name}${p.controle ? ` (Controle: ${p.controle})` : ""}`,
-                        value: p.codProd.toString()
-                    }))}
-                    onChange={(val: any) => {
-                        if (val) {
-                            const prod = searchResults.find((r: any) => r.codProd.toString() === val.toString());
-                            setSelectedProduct(prod);
-                        }
-                    }}
-                />
 
                 <Flex direction="row" gap="sm" align="end">
                     <Box flex={1}>
@@ -650,13 +689,23 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                     <Flex direction="column" gap="md">
                         <Text format={{ fontWeight: "bold", fontSize: "lg" }}>🔗 Status da Conexão Sankhya</Text>
 
+
+                        <Flex gap="sm" wrap="wrap">
+                            <Tag variant={quoteStatus?.numnota ? "success" : "warning"}>
+                                Status: {quoteStatus?.numnota
+                                    ? `Confirmado (Nota ${quoteStatus.numnota})`
+                                    : (hasBudget ? "Em Negociação" : "Iniciando Negociação")}
+                            </Tag>
+                        </Flex>
+
+
                         {missingData?.codParc ? (
                             <Alert title="Parceiro Ausente" variant="warning">
                                 Este negócio não tem um "Parceiro" vinculado. Adicione a empresa no HubSpot.
                             </Alert>
                         ) : hasBudget ? (
                             <Alert title="Conexão Ativa" variant="success">
-                                NUNOTA Vincunlado: <strong>{quoteStatus?.nunota}</strong>
+                                Nro. Único Vinculado: <Text inline={true} format={{ fontWeight: "bold" }}>{quoteStatus?.nunota}</Text>
                             </Alert>
                         ) : (
                             <Alert title="Conexão Pendente" variant="error">
@@ -664,18 +713,9 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                             </Alert>
                         )}
 
-                        <Flex gap="sm" wrap="wrap">
-                            <Tag variant={missingData?.codParc ? "warning" : "success"}>
-                                Parceiro: {missingData?.codParc || "OK"}
-                            </Tag>
-                            <Tag variant="info">
-                                Natureza: {quoteStatus?.statusNota || "Padrão"}
-                            </Tag>
-                        </Flex>
-
                         {!hasBudget && (
                             <Button onClick={handleGenerateHeader} variant="primary">
-                                🔨 Iniciar Orçamento (Gerar NUNOTA)
+                                Iniciar Orçamento (ERP)
                             </Button>
                         )}
                     </Flex>
@@ -694,144 +734,165 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     const renderStep2 = () => {
         return (
             <Flex direction="column" gap="md">
-                <Tabs activeTabId={itemsTab}>
-                    <Tab id="list" label="📝 Carrinho" onClick={() => setItemsTab("list")} />
-                    <Tab id="add" label="➕ Adicionar" onClick={() => setItemsTab("add")} />
-                    <Tab id="details" label="ℹ️ Detalhes" onClick={() => setItemsTab("details")} />
-                </Tabs>
-
-                {itemsTab === "list" && (
-                    <Box>
-                        <Flex direction="row" gap="sm" justify="between" align="center" wrap="wrap">
-                            <Box>
-                                <Text format={{ fontWeight: "bold" }}>Itens no Carrinho: {data?.items?.length || 0}</Text>
-                            </Box>
-                            <Button size="sm" onClick={() => handleApplyAllItemsPV("pv1")}>Aplicar PV1 em Tudo</Button>
-                        </Flex>
-                        <Divider distance="sm" />
-                        <Table>
-                            <TableHead>
-                                <TableRow>
-                                    <TableHeader width="auto">Ações</TableHeader>
-                                    <TableHeader width="auto">Qtd</TableHeader>
-                                    <TableHeader width="auto">Produto</TableHeader>
-                                    <TableHeader width="auto">Lote</TableHeader>
-                                    <TableHeader width="auto">Preço</TableHeader>
-                                </TableRow>
-                            </TableHead>
-                            <TableBody>
-                                {data?.items?.length === 0 && (
+                <Tabs selected={itemsTab} onSelectedChange={setItemsTab}>
+                    <Tab tabId="list" title="📝 Carrinho">
+                        <Box>
+                            <Flex direction="row" gap="sm" justify="between" align="center" wrap="wrap">
+                                <Box>
+                                    <Text format={{ fontWeight: "bold" }}>Itens no Carrinho: {data?.items?.length || 0}</Text>
+                                </Box>
+                                <Button size="sm" onClick={() => handleApplyAllItemsPV("pv1")}>Aplicar PV1 em Tudo</Button>
+                            </Flex>
+                            <Divider distance="sm" />
+                            <Table>
+                                <TableHead>
                                     <TableRow>
-                                        <TableCell>
-                                            <EmptyState />
-                                        </TableCell>
+                                        <TableHeader width="auto">Ações</TableHeader>
+                                        <TableHeader width={100}>Qtd</TableHeader>
+                                        <TableHeader width="auto">Produto</TableHeader>
+                                        <TableHeader width="auto">Lote</TableHeader>
+                                        <TableHeader width="auto">Preço</TableHeader>
                                     </TableRow>
-                                )}
-                                {data?.items?.map(item => (
-                                    <TableRow key={item.id}>
-                                        <TableCell>
-                                            <Dropdown buttonText="Opções" variant="secondary" buttonSize="xs">
-                                                <Dropdown.ButtonItem onClick={() => handleDuplicateItem(item.id)}>📑 Duplicar</Dropdown.ButtonItem>
-                                                <Dropdown.ButtonItem onClick={() => handleDeleteItem(item.id)}>🗑️ Excluir</Dropdown.ButtonItem>
-                                            </Dropdown>
-                                        </TableCell>
-                                        <TableCell>
-                                            <NumberInput
-                                                label=""
-                                                name={`q-${item.id}`}
-                                                value={item.quantity}
-                                                onChange={(v) => handleQuantityChange(item.id, v)}
-                                                onBlur={() => handleSaveQuantity(item.id, item.quantity)}
-                                                min={0}
-                                            />
-                                        </TableCell>
-                                        <TableCell>
-                                            <Text format={{ fontWeight: "bold" }}>{item.name}</Text>
-                                            <Text variant="microcopy">Cód: {item.codProd}</Text>
-                                        </TableCell>
-                                        <TableCell>
-                                            {availableControls[item.codProd] ? (
-                                                <Select
-                                                    name={`lote-${item.id}`}
-                                                    options={availableControls[item.codProd].map(c => ({
-                                                        label: `${c.controle} (${c.saldo})`,
-                                                        value: c.controle
-                                                    }))}
-                                                    value={item.sankhyaControle || ""}
-                                                    onChange={(val) => handleUpdateItemControl(item.id, val)}
-                                                    placeholder="Selecione..."
-                                                />
-                                            ) : <LoadingSpinner size="sm" />}
-                                        </TableCell>
-                                        <TableCell>
-                                            {customPriceItemId === item.id ? (
-                                                <Flex direction="row" gap="sm" align="center">
-                                                    <NumberInput
-                                                        label=""
-                                                        name={`custom-price-${item.id}`}
-                                                        value={customPriceValue}
-                                                        onChange={(val) => setCustomPriceValue(val)}
-                                                        precision={2}
-                                                    />
-                                                    <Button
-                                                        onClick={handleApplyCustomPrice}
-                                                        variant="primary"
-                                                        size="xs"
-                                                    >
-                                                        ✅
-                                                    </Button>
-                                                    <Button
-                                                        onClick={() => setCustomPriceItemId(null)}
-                                                        variant="secondary"
-                                                        size="xs"
-                                                    >
-                                                        ❌
-                                                    </Button>
-                                                </Flex>
-                                            ) : (
-                                                <Select
+                                </TableHead>
+                                <TableBody>
+                                    {data?.items?.length === 0 && (
+                                        <TableRow>
+                                            <TableCell>
+                                                <EmptyState />
+                                            </TableCell>
+                                        </TableRow>
+                                    )}
+                                    {data?.items?.map(item => (
+                                        <TableRow key={item.id}>
+                                            <TableCell>
+                                                <Dropdown buttonText="Opções" variant="secondary" buttonSize="xs">
+                                                    <Dropdown.ButtonItem onClick={() => handleDuplicateItem(item.id)}>📑 Duplicar</Dropdown.ButtonItem>
+                                                    <Dropdown.ButtonItem onClick={() => handleDeleteItem(item.id)}>🗑️ Excluir</Dropdown.ButtonItem>
+                                                </Dropdown>
+                                            </TableCell>
+                                            <TableCell>
+                                                <NumberInput
                                                     label=""
-                                                    name={`pv-${item.id}`}
-                                                    value={getSelectedPV(item)}
-                                                    options={[
-                                                        { label: `PV1: ${formatCurrency(item.prices.pv1)}`, value: "pv1" },
-                                                        { label: `PV2: ${formatCurrency(item.prices.pv2)}`, value: "pv2" },
-                                                        { label: `PV3: ${formatCurrency(item.prices.pv3)}`, value: "pv3" },
-                                                        ...(getSelectedPV(item) === 'custom' ? [{ label: `Custom: ${formatCurrency(selectedPrices[item.id] || ((item.prices.custom || item.currentPrice || 0) * item.quantity))}`, value: "custom" }] : []),
-                                                        { label: "✏️ Definir Custom...", value: "edit_custom" }
-                                                    ]}
-                                                    onChange={(val) => {
-                                                        if (val === "pv1") handleApplyItemPrice(item.id, item.prices.pv1 || 0);
-                                                        else if (val === "pv2") handleApplyItemPrice(item.id, item.prices.pv2 || 0);
-                                                        else if (val === "pv3") handleApplyItemPrice(item.id, item.prices.pv3 || 0);
-                                                        else if (val === "edit_custom") {
-                                                            setCustomPriceItemId(item.id);
-                                                            setCustomPriceValue(selectedPrices[item.id] || (item.currentPrice ? item.currentPrice * item.quantity : 0));
-                                                        }
-                                                    }}
+                                                    name={`q-${item.id}`}
+                                                    value={item.quantity}
+                                                    onChange={(v) => handleQuantityChange(item.id, v)}
+                                                    onBlur={() => handleSaveQuantity(item.id, item.quantity)}
+                                                    min={0}
                                                 />
-                                            )}
-                                        </TableCell>
-                                    </TableRow>
-                                ))}
-                            </TableBody>
-                        </Table>
-                    </Box>
-                )}
+                                            </TableCell>
+                                            <TableCell>
+                                                <Flex direction="column">
+                                                    <Text format={{ fontWeight: "bold" }}>
+                                                        {item.name}
+                                                        <Text inline={true} variant="microcopy"> Cód: {item.codProd}</Text>
+                                                    </Text>
+                                                    <Text variant="microcopy">Total: {item.stock + (item.stockOther || 0)}</Text>
+                                                    <Flex direction="row" gap="xs" wrap="wrap">
+                                                        {item.stock < item.quantity && (
+                                                            <Tag variant="warning">⚠️ {item.stock}</Tag>
+                                                        )}
+                                                        {(() => {
+                                                            const currentEmp = String(data?.codEmp);
+                                                            const otherEmp = currentEmp === "1" ? "2" : "1";
+                                                            const otherLabel = currentEmp === "1" ? "Emp 2" : "Emp 1";
 
-                {itemsTab === "add" && (
-                    <Box>
-                        {renderAddItemContent()}
-                    </Box>
-                )}
+                                                            // Calculate stock from loaded controls for the OTHER company
+                                                            const otherControls = availableControls[`${item.codProd}-${otherEmp}`];
+                                                            const calculatedStockOther = otherControls
+                                                                ? otherControls.reduce((acc, curr) => acc + curr.saldo, 0)
+                                                                : (item.stockOther || 0); // Fallback to backend value if not loaded yet? Or 0.
 
-                {itemsTab === "details" && (
-                    <Box>
-                        <Alert title="Informações Detalhadas" variant="info">
-                            Selecione um item na aba "Carrinho" para ver detalhes de estoque multi-empresa aqui. (Em breve)
-                        </Alert>
-                    </Box>
-                )}
+                                                            return (
+                                                                <Tag>{otherLabel}: {calculatedStockOther}</Tag>
+                                                            );
+                                                        })()}
+                                                    </Flex>
+                                                </Flex>
+                                            </TableCell>
+                                            <TableCell>
+                                                {availableControls[`${item.codProd}-${data?.codEmp || ""}`] ? (
+                                                    <Select
+                                                        name={`lote-${item.id}`}
+                                                        options={availableControls[`${item.codProd}-${data?.codEmp || ""}`]
+                                                            .filter((c: any) => !data?.codEmp || !c.codEmp || String(c.codEmp) === String(data?.codEmp))
+                                                            .map(c => ({
+                                                                label: `${c.controle} (${c.saldo})`,
+                                                                value: c.controle
+                                                            }))}
+                                                        value={item.sankhyaControle || ""}
+                                                        onChange={(val) => handleUpdateItemControl(item.id, val)}
+                                                        placeholder="Selecione..."
+                                                    />
+                                                ) : <LoadingSpinner size="sm" />}
+                                            </TableCell>
+                                            <TableCell>
+                                                {customPriceItemId === item.id ? (
+                                                    <Flex direction="row" gap="sm" align="center">
+                                                        <NumberInput
+                                                            label=""
+                                                            name={`custom-price-${item.id}`}
+                                                            value={customPriceValue}
+                                                            onChange={(val) => setCustomPriceValue(val)}
+                                                            precision={2}
+                                                        />
+                                                        <Button
+                                                            onClick={handleApplyCustomPrice}
+                                                            variant="primary"
+                                                            size="xs"
+                                                        >
+                                                            ✅
+                                                        </Button>
+                                                        <Button
+                                                            onClick={() => setCustomPriceItemId(null)}
+                                                            variant="secondary"
+                                                            size="xs"
+                                                        >
+                                                            ❌
+                                                        </Button>
+                                                    </Flex>
+                                                ) : (
+                                                    <Select
+                                                        label=""
+                                                        name={`pv-${item.id}`}
+                                                        value={getSelectedPV(item)}
+                                                        options={[
+                                                            { label: (item.prices.pv1 || 0) > 0 ? `PV1: ${formatCurrency(item.prices.pv1)}` : "PV1: Sem Tabela", value: "pv1" },
+                                                            { label: (item.prices.pv2 || 0) > 0 ? `PV2: ${formatCurrency(item.prices.pv2)}` : "PV2: Sem Tabela", value: "pv2" },
+                                                            { label: (item.prices.pv3 || 0) > 0 ? `PV3: ${formatCurrency(item.prices.pv3)}` : "PV3: Sem Tabela", value: "pv3" },
+                                                            ...(getSelectedPV(item) === 'custom' ? [{ label: `Edit: ${formatCurrency(selectedPrices[item.id] || ((item.prices.custom || item.currentPrice || 0) * item.quantity))}`, value: "custom" }] : []),
+                                                            { label: "✏️ Definir Valor...", value: "edit_custom" }
+                                                        ]}
+                                                        onChange={(val) => {
+                                                            if (val === "pv1") handleApplyItemPrice(item.id, item.prices.pv1 || 0);
+                                                            else if (val === "pv2") handleApplyItemPrice(item.id, item.prices.pv2 || 0);
+                                                            else if (val === "pv3") handleApplyItemPrice(item.id, item.prices.pv3 || 0);
+                                                            else if (val === "edit_custom") {
+                                                                setCustomPriceItemId(item.id);
+                                                                setCustomPriceValue(selectedPrices[item.id] || (item.currentPrice ? item.currentPrice * item.quantity : 0));
+                                                            }
+                                                        }}
+                                                    />
+                                                )}
+                                            </TableCell>
+                                        </TableRow>
+                                    ))}
+                                </TableBody>
+                            </Table>
+                        </Box>
+                    </Tab>
+                    <Tab tabId="add" title="➕ Adicionar Itens">
+                        <Box>
+                            {renderAddItemContent()}
+                        </Box>
+                    </Tab>
+                    <Tab tabId="details" title="ℹ️ Detalhes">
+                        <Box>
+                            <Alert title="Informações Detalhadas" variant="info">
+                                Selecione um item na aba "Carrinho" para ver detalhes de estoque multi-empresa aqui. (Em breve)
+                            </Alert>
+                        </Box>
+                    </Tab>
+                </Tabs>
 
                 <Flex gap="sm" justify="between">
                     <Button onClick={() => setCurrentStep(0)} variant="secondary">&larr; Voltar para Conexão</Button>
@@ -890,11 +951,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             <StepIndicator
                 currentStep={currentStep}
                 stepNames={['Conexão', 'Gestão de Itens', 'Fechamento']}
-            >
-                <Step title="Conexão" status={quoteStatus?.nunota ? "completed" : "current"} />
-                <Step title="Gestão" status={currentStep === 1 ? "current" : (currentStep > 1 ? "completed" : "upcoming")} />
-                <Step title="Fechamento" status={currentStep === 2 ? "current" : "upcoming"} />
-            </StepIndicator>
+            />
 
             <Divider />
 

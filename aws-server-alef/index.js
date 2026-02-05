@@ -2352,16 +2352,93 @@ app.post("/hubspot/generate-header", async (req, res) => {
     const codTipVenda = toInt("codTipVenda", codTipVendaRaw) || (parcTipVenda ? parseInt(parcTipVenda) : 503);
 
     // Vendedor: HubSpot Owner mapped > Parceiro default > 0
-    // const ownerIdRaw = props.hubspot_owner_id;
-    // const ownerId = ownerIdRaw ? parseInt(ownerIdRaw) : null;
     const codVend = parcVend ? parseInt(parcVend) : 0;
-
-    // Natureza: Se vier do parceiro, usamos no UPDATE depois
 
     // Data de NegociaÃ§Ã£o: Hoje
     const dtNeg = new Date().toLocaleDateString('pt-BR'); // DD/MM/YYYY
 
-    console.log(`[GENERATE-HEADER] Criando cabeÃ§alho final:`, {
+    // --- LOGIC TO FETCH AND MAP LINE ITEMS ---
+    console.log(`[GENERATE-HEADER] Buscando Line Items do Deal ${dealId} para inclusÃ£o...`);
+    const lineItemsAssocUrl = `https://api.hubspot.com/crm/v3/objects/deals/${dealId}/associations/line_items`;
+
+    let productItems = [];
+    try {
+      const lineItemsAssocResp = await axios.get(lineItemsAssocUrl, {
+        headers: { Authorization: `Bearer ${hubspotToken}` }
+      });
+
+      const lineItemIds = lineItemsAssocResp.data.results?.map(r => r.id) || [];
+
+      if (lineItemIds.length > 0) {
+        console.log(`[GENERATE-HEADER] Processando ${lineItemIds.length} itens...`);
+        const lineItemsBatchResp = await axios.post(
+          `https://api.hubspot.com/crm/v3/objects/line_items/batch/read`,
+          {
+            properties: ["hs_product_id", "quantity", "price", "name", "hs_sku", "controle", "sankhya_controle"],
+            inputs: lineItemIds.map(id => ({ id }))
+          },
+          { headers: { Authorization: `Bearer ${hubspotToken}` } }
+        );
+
+        const hubspotItems = lineItemsBatchResp.data.results;
+
+        for (const item of hubspotItems) {
+          const hsProductId = item.properties.hs_product_id;
+          const quantity = parseFloat(item.properties.quantity) || 0;
+          const price = parseFloat(item.properties.price) || 0;
+          let sku = item.properties.hs_sku;
+          const controle = item.properties.controle || item.properties.sankhya_controle || "";
+
+          // Fallback: search SKU in Product object if missing in Line Item
+          if (!sku && hsProductId) {
+            try {
+              const prodResp = await axios.get(
+                `https://api.hubspot.com/crm/v3/objects/products/${hsProductId}?properties=hs_sku`,
+                { headers: { Authorization: `Bearer ${hubspotToken}` } }
+              );
+              sku = prodResp.data.properties.hs_sku;
+            } catch (e) {
+              console.warn(`[GENERATE-HEADER] Erro ao buscar SKU do produto ${hsProductId}: ${e.message}`);
+            }
+          }
+
+          // Sanitizar SKU
+          if (sku) {
+            sku = String(sku).split('#')[0].trim();
+          }
+
+          const codProd = toInt("codProd", sku);
+          if (!codProd) {
+            console.warn(`[GENERATE-HEADER] Item '${item.properties.name}' ignorado: Sem CODPROD vÃ¡lido.`);
+            continue;
+          }
+
+          // Buscar CODVOL do Sankhya
+          const prodInfoSql = `SELECT CODVOL FROM TGFPRO WHERE CODPROD = ${codProd}`;
+          let codVol = "UN";
+          try {
+            const prodInfoResp = await postGatewayWithRetry({ requestBody: { sql: prodInfoSql } });
+            codVol = prodInfoResp.data?.responseBody?.rows?.[0]?.[0] || "UN";
+          } catch (e) {
+            console.warn(`[GENERATE-HEADER] Erro buscar vol produto ${codProd}: ${e.message}`);
+          }
+
+          productItems.push({
+            codProd,
+            codVol,
+            qtdNeg: quantity,
+            vlrUnit: price,
+            vlrTot: quantity * price,
+            controle,
+            name: item.properties.name
+          });
+        }
+      }
+    } catch (e) {
+      console.warn(`[GENERATE-HEADER] Falha ao buscar line items (prosseguindo sem itens): ${e.message}`);
+    }
+
+    console.log(`[GENERATE-HEADER] Criando cabeÃ§alho com ${productItems.length} itens:`, {
       CODEMP: codEmp,
       CODPARC: codParc,
       CODTIPOPER: codTipOper,
@@ -2393,6 +2470,20 @@ app.post("/hubspot/generate-header", async (req, res) => {
             OBSERVACAO: { "$": props.observacao || "" },
             AD_OBSFRETE: { "$": props.observacao_frete || "" },
             AD_OBSERVACAOINTERNA: { "$": props.observacao_interna || "" }
+          },
+          itens: {
+            item: productItems.map((item, index) => ({
+              NUNOTA: { "$": "" },
+              SEQUENCIA: { "$": index + 1 },
+              CODEMP: { "$": codEmp },
+              CODPROD: { "$": item.codProd },
+              CODVOL: { "$": item.codVol },
+              CODLOCALORIG: { "$": 0 },
+              CONTROLE: { "$": item.controle },
+              QTDNEG: { "$": item.qtdNeg },
+              VLRUNIT: { "$": item.vlrUnit },
+              VLRTOT: { "$": item.vlrTot }
+            }))
           }
         }
       }
