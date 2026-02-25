@@ -811,52 +811,94 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     // --- STEP 1: CONEXÃO (Handshake) ---
     const renderStep1 = () => {
         const hasBudget = !!quoteStatus?.nunota;
+        const isConfirmed = quoteStatus?.isConfirmed;
+        const qtdItens = data?.items?.length || 0;
+        const totalValue = amount || 0;
+        const profitability = quoteStatus?.profitability;
+        const lucro = profitability?.lucro || 0;
+        const percentLucro = profitability?.percentLucro || 0;
+        const isRentavel = profitability?.isRentavel;
 
         return (
             <Flex direction="column" gap="md">
+                {/* Status Banner */}
                 <Tile>
                     <Flex direction="column" gap="md">
-                        <Text format={{ fontWeight: "bold" }}>🔗 Status da Conexão Sankhya</Text>
-
-
-                        <Flex gap="sm" wrap="wrap">
-                            <Tag variant={quoteStatus?.nunota ? "success" : "warning"}>
-                                Status: {quoteStatus?.nunota
-                                    ? `Confirmado (Nota ${quoteStatus.nunota})`
-                                    : (hasBudget ? "Em Negociação" : "Iniciando Negociação")}
-                            </Tag>
+                        <Flex justify="between" align="center">
+                            <Text format={{ fontWeight: "bold" }}>🔗 Conexão com Sankhya ERP</Text>
+                            <Flex gap="sm">
+                                {isConfirmed && <Tag variant="success">✅ Confirmado</Tag>}
+                                {!isConfirmed && hasBudget && <Tag variant="warning">⏳ Em Negociação</Tag>}
+                                {!hasBudget && <Tag variant="danger">⚠️ Sem Orçamento</Tag>}
+                            </Flex>
                         </Flex>
 
+                        <Divider />
 
+                        {/* Info Grid */}
+                        {hasBudget && (
+                            <Flex gap="md" wrap="wrap">
+                                <Flex direction="column" gap="extra-small">
+                                    <Text variant="microcopy">Nro. Único (NUNOTA)</Text>
+                                    <Text format={{ fontWeight: "bold" }}>#{quoteStatus?.nunota}</Text>
+                                </Flex>
+                                <Flex direction="column" gap="extra-small">
+                                    <Text variant="microcopy">Itens no Orçamento</Text>
+                                    <Text format={{ fontWeight: "bold" }}>{qtdItens} produto{qtdItens !== 1 ? 's' : ''}</Text>
+                                </Flex>
+                                <Flex direction="column" gap="extra-small">
+                                    <Text variant="microcopy">Total do Orçamento</Text>
+                                    <Text format={{ fontWeight: "bold" }}>{formatCurrency(totalValue)}</Text>
+                                </Flex>
+                                {profitability && (
+                                    <Flex direction="column" gap="extra-small">
+                                        <Text variant="microcopy">Rentabilidade</Text>
+                                        <Tag variant={isRentavel ? "success" : "error"}>
+                                            {isRentavel ? "✅" : "❌"} {percentLucro.toFixed(2)}% de lucro
+                                        </Tag>
+                                    </Flex>
+                                )}
+                            </Flex>
+                        )}
+
+                        {/* Estado de conexão */}
                         {!data?.codParceiro ? (
                             <Alert title="Parceiro Ausente" variant="warning">
-                                Este negócio não tem um "Parceiro" / Empresa vinculado ou a propriedade "parceiro" não está preenchida. Adicione uma empresa associada a este negócio ou preencha a propriedade "parceiro" com o código do parceiro.
+                                Este negócio não tem um "Parceiro" / Empresa vinculado. Adicione uma empresa associada ou preencha a propriedade "parceiro" com o código do parceiro Sankhya.
                             </Alert>
                         ) : !hasBudget ? (
-                            <Alert title="Conexão Pendente" variant="error">
-                                Este negócio ainda não possui um orçamento iniciado no Sankhya.
+                            <Alert title="Orçamento não iniciado" variant="error">
+                                Este negócio ainda não possui um orçamento no Sankhya. Clique em "Iniciar Orçamento" para criar.
+                            </Alert>
+                        ) : isConfirmed ? (
+                            <Alert title="Orçamento Confirmado e Faturado" variant="success">
+                                Este orçamento já foi confirmado no Sankhya. NUNOTA: <Text inline={true} format={{ fontWeight: "bold" }}>#{quoteStatus?.nunota}</Text>. Acesse o passo de Fechamento para ver os detalhes completos.
                             </Alert>
                         ) : (!data?.items || data.items.length === 0) ? (
                             <Alert title="Orçamento Vazio" variant="info">
-                                Lista de itens vazia ou não sincronizada. Adicione itens para calcular.
+                                Orçamento criado mas sem itens. Avance para "Gestão de Itens" para adicionar produtos.
                             </Alert>
                         ) : (
                             <Alert title="Conexão Ativa" variant="success">
-                                Nro. Único Vinculado: <Text inline={true} format={{ fontWeight: "bold" }}>{quoteStatus?.nunota}</Text>
+                                Orçamento sincronizado com Sankhya. {qtdItens} item(s) · Total: {formatCurrency(totalValue)}
                             </Alert>
                         )}
 
                         {!hasBudget && (
                             <Button onClick={handleGenerateHeader} variant="primary">
-                                Iniciar Orçamento (ERP)
+                                🚀 Iniciar Orçamento (ERP)
                             </Button>
                         )}
                     </Flex>
                 </Tile>
 
-                {hasBudget && !!data?.codParceiro && data?.items && data.items.length > 0 && (
-                    <Button onClick={() => setCurrentStep(1)} variant="primary">
-                        Avançar para Produtos &rarr;
+                {hasBudget && !!data?.codParceiro && (
+                    <Button
+                        onClick={() => setCurrentStep(isConfirmed ? 2 : 1)}
+                        variant="primary"
+                        disabled={!data?.items || data.items.length === 0}
+                    >
+                        {isConfirmed ? '📋 Ver Resumo de Fechamento →' : (data?.items && data.items.length > 0 ? 'Avançar para Produtos →' : 'Adicionar Itens para continuar')}
                     </Button>
                 )}
             </Flex>
@@ -1169,41 +1211,155 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
     // --- STEP 3: FECHAMENTO (Checkout) ---
     const renderStep3 = () => {
+        const isConfirmed = quoteStatus?.isConfirmed;
+        const profitability = quoteStatus?.profitability;
+        const qtdItens = data?.items?.length || 0;
+
         return (
             <Flex direction="column" gap="md">
                 <Tile>
-                    <Flex direction="column" gap="md" align="center">
-                        <Heading>Resumo do Negócio</Heading>
-                        <Divider />
-                        <Flex gap="xl" justify="center">
-                            <Flex direction="column" align="center">
-                                <Text variant="microcopy">Total Calculado (Itens)</Text>
-                                <Heading>{formatCurrency(amount || 0)}</Heading>
-                            </Flex>
-                        </Flex>
-                        <Divider />
-                        <Flex gap="md">
-                            {/* Profitability table moved to Step 2 */}
-                        </Flex>
-                        <Divider />
-                        <Flex gap="md">
-                            <Button variant="secondary" onClick={() => handleSaveAmount()}>✓ Sincronizar Últimos Valores</Button>
+                    <Flex direction="column" gap="md">
 
-                            {(quoteStatus?.buttonAction === "CONFIRM_QUOTE" || quoteStatus?.buttonAction === "GENERATE_PDF") && (
-                                <Button
-                                    variant="primary"
-                                    onClick={handleQuoteAction}
-                                    disabled={quoteLoading}
-                                >
-                                    {quoteLoading ? "Processando..." : quoteStatus.buttonLabel}
-                                </Button>
-                            )}
-                        </Flex>
-                        {saveSuccess && <Alert title="Sucesso" variant="success">Valores sincronizados com o HubSpot!</Alert>}
-                        {quoteError && <Alert title="Aviso" variant="warning">{quoteError}</Alert>}
-                        {quoteSuccess && <Alert title="Orçamento Confirmado" variant="success">{quoteSuccess}</Alert>}
+                        {/* === ESTADO: JÁ CONFIRMADO === */}
+                        {isConfirmed ? (
+                            <Flex direction="column" gap="md">
+                                <Flex justify="between" align="center">
+                                    <Heading>📋 Resumo do Fechamento</Heading>
+                                    <Tag variant="success">✅ Confirmado</Tag>
+                                </Flex>
+                                <Divider />
+
+                                {/* Bloco NUNOTA + dados-chave */}
+                                <Flex gap="md" wrap="wrap">
+                                    <Flex direction="column" gap="extra-small">
+                                        <Text variant="microcopy">Nro. Único Sankhya</Text>
+                                        <Text format={{ fontWeight: "bold" }}>#{quoteStatus?.nunota}</Text>
+                                    </Flex>
+                                    <Flex direction="column" gap="extra-small">
+                                        <Text variant="microcopy">Itens Faturados</Text>
+                                        <Text format={{ fontWeight: "bold" }}>{qtdItens} produto{qtdItens !== 1 ? 's' : ''}</Text>
+                                    </Flex>
+                                    <Flex direction="column" gap="extra-small">
+                                        <Text variant="microcopy">Valor Total</Text>
+                                        <Text format={{ fontWeight: "bold" }}>{formatCurrency(amount || 0)}</Text>
+                                    </Flex>
+                                </Flex>
+
+                                <Divider />
+
+                                {/* Análise financeira final */}
+                                {profitability && (
+                                    <Flex direction="column" gap="sm">
+                                        <Text format={{ fontWeight: "bold" }}>📊 Análise Financeira Final</Text>
+                                        <Flex gap="md" wrap="wrap">
+                                            <Flex direction="column" gap="extra-small">
+                                                <Text variant="microcopy">Faturamento</Text>
+                                                <Text>{formatCurrency(profitability.faturamento)}</Text>
+                                            </Flex>
+                                            <Flex direction="column" gap="extra-small">
+                                                <Text variant="microcopy">Custo Mercadoria</Text>
+                                                <Text>{formatCurrency(profitability.custoMercadoriaVendida)}</Text>
+                                            </Flex>
+                                            <Flex direction="column" gap="extra-small">
+                                                <Text variant="microcopy">Gasto Variável</Text>
+                                                <Text>{formatCurrency(profitability.gastoVariavel)}</Text>
+                                            </Flex>
+                                            <Flex direction="column" gap="extra-small">
+                                                <Text variant="microcopy">Gasto Fixo</Text>
+                                                <Text>{formatCurrency(profitability.gastoFixo)}</Text>
+                                            </Flex>
+                                            <Flex direction="column" gap="extra-small">
+                                                <Text variant="microcopy">Margem de Contribuição</Text>
+                                                <Text>{formatCurrency(profitability.margemContribuicao)}</Text>
+                                            </Flex>
+                                            <Flex direction="column" gap="extra-small">
+                                                <Text variant="microcopy">Lucro Líquido</Text>
+                                                <Tag variant={profitability.isRentavel ? "success" : "error"}>
+                                                    {profitability.isRentavel ? "✅" : "❌"} {formatCurrency(profitability.lucro)} ({profitability.percentLucro.toFixed(2)}%)
+                                                </Tag>
+                                            </Flex>
+                                        </Flex>
+                                    </Flex>
+                                )}
+
+                                <Divider />
+
+                                {/* Banner de sucesso final */}
+                                <Alert title="Orçamento Confirmado e Faturado" variant="success">
+                                    Este orçamento foi confirmado com sucesso no Sankhya ERP. O PDF do orçamento foi gerado e anexado a este negócio. Tudo pronto!
+                                </Alert>
+                            </Flex>
+
+                        ) : (
+                            /* === ESTADO: PENDENTE DE CONFIRMAÇÃO === */
+                            <Flex direction="column" gap="md" align="center">
+                                <Heading>📋 Resumo do Negócio</Heading>
+                                <Divider />
+
+                                {/* Totais */}
+                                <Flex gap="xl" justify="center" wrap="wrap">
+                                    <Flex direction="column" align="center">
+                                        <Text variant="microcopy">Total Calculado (Itens)</Text>
+                                        <Heading>{formatCurrency(amount || 0)}</Heading>
+                                    </Flex>
+                                    <Flex direction="column" align="center">
+                                        <Text variant="microcopy">Nro. Único Sankhya</Text>
+                                        <Heading>#{quoteStatus?.nunota || '—'}</Heading>
+                                    </Flex>
+                                    <Flex direction="column" align="center">
+                                        <Text variant="microcopy">Itens</Text>
+                                        <Heading>{qtdItens}</Heading>
+                                    </Flex>
+                                </Flex>
+
+                                <Divider />
+
+                                {/* Rentabilidade resumida */}
+                                {profitability && (
+                                    <Flex gap="md" wrap="wrap" justify="center">
+                                        <Flex direction="column" align="center">
+                                            <Text variant="microcopy">Lucro Líquido</Text>
+                                            <Tag variant={profitability.isRentavel ? "success" : "error"}>
+                                                {profitability.isRentavel ? "✅" : "❌"} {formatCurrency(profitability.lucro)} ({profitability.percentLucro.toFixed(2)}%)
+                                            </Tag>
+                                        </Flex>
+                                        <Flex direction="column" align="center">
+                                            <Text variant="microcopy">Margem Contribuição</Text>
+                                            <Text format={{ fontWeight: "bold" }}>{profitability.percentMC.toFixed(2)}%</Text>
+                                        </Flex>
+                                    </Flex>
+                                )}
+
+                                <Divider />
+
+                                {/* Ações */}
+                                <Flex gap="md" wrap="wrap" justify="center">
+                                    <Button variant="secondary" onClick={() => handleSaveAmount()}>✓ Sincronizar Últimos Valores</Button>
+
+                                    {(quoteStatus?.buttonAction === "CONFIRM_QUOTE" || quoteStatus?.buttonAction === "GENERATE_PDF") && (
+                                        <Button
+                                            variant="primary"
+                                            onClick={handleQuoteAction}
+                                            disabled={quoteLoading}
+                                        >
+                                            {quoteLoading ? "Processando..." : quoteStatus.buttonLabel}
+                                        </Button>
+                                    )}
+                                </Flex>
+
+                                {saveSuccess && <Alert title="Sucesso" variant="success">Valores sincronizados com o HubSpot!</Alert>}
+                                {quoteError && <Alert title="Aviso" variant="warning">{quoteError}</Alert>}
+                                {quoteSuccess && <Alert title="Orçamento Confirmado" variant="success">{quoteSuccess}</Alert>}
+                                {quoteStatus?.profitability && !quoteStatus.profitability.isRentavel && (
+                                    <Alert title="Negócio com Prejuízo" variant="error">
+                                        Atenção: O orçamento atual apresenta prejuízo financeiro. Ajuste preços ou quantidades antes de confirmar.
+                                    </Alert>
+                                )}
+                            </Flex>
+                        )}
                     </Flex>
                 </Tile>
+
                 <Button onClick={() => setCurrentStep(1)} variant="secondary">&larr; Voltar para Itens</Button>
             </Flex>
         );
