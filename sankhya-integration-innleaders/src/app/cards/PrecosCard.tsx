@@ -153,24 +153,6 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         }
     };
 
-    // Sincroniza Rentabilidade Real do Sankhya com a Memória Local dos Itens
-    useEffect(() => {
-        if (quoteStatus && quoteStatus.profitability && quoteStatus.profitability.itemProfitabilities && data?.items) {
-            setOptimisticProfitabilities(prev => {
-                const newRentabs = { ...prev };
-                const iprofs = quoteStatus!.profitability!.itemProfitabilities!;
-                let changed = false;
-                data.items.forEach(item => {
-                    const match = iprofs.find((p: any) => p.codProd === String(item.codProd));
-                    if (match && newRentabs[item.id] !== match.percentLucro) {
-                        newRentabs[item.id] = match.percentLucro;
-                        changed = true;
-                    }
-                });
-                return changed ? newRentabs : prev;
-            });
-        }
-    }, [quoteStatus?.profitability?.itemProfitabilities, data?.items]);
 
     // Sync State
     const [syncing, setSyncing] = useState(false);
@@ -250,6 +232,44 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             pv3: acc.pv3 + ((item.prices.pv3 || 0) * item.quantity),
         }), { pv1: 0, pv2: 0, pv3: 0 });
     }, [data]);
+
+    // Sincroniza Rentabilidade Real do Sankhya com a Memória Local dos Itens
+    useEffect(() => {
+        if (quoteStatus && quoteStatus.profitability && quoteStatus.profitability.itemProfitabilities && data?.items) {
+            setOptimisticProfitabilities(prev => {
+                const newRentabs = { ...prev };
+                const iprofs = [...quoteStatus!.profitability!.itemProfitabilities!]; // Clone to allow consuming items
+                let changed = false;
+                data.items.forEach(item => {
+                    const itemTotal = selectedPrices[item.id] !== undefined ? selectedPrices[item.id] : ((item.currentPrice || 0) * item.quantity);
+
+                    const candidates = iprofs.filter((p: any) => p.codProd === String(item.codProd));
+                    if (candidates.length > 0) {
+                        let bestMatchIdx = -1;
+                        let minDiff = Infinity;
+
+                        candidates.forEach(c => {
+                            const diff = Math.abs((c.faturamento || 0) - itemTotal);
+                            if (diff < minDiff) {
+                                minDiff = diff;
+                                bestMatchIdx = iprofs.indexOf(c);
+                            }
+                        });
+
+                        if (bestMatchIdx !== -1) {
+                            const match = iprofs[bestMatchIdx];
+                            if (newRentabs[item.id] !== match.percentLucro) {
+                                newRentabs[item.id] = match.percentLucro;
+                                changed = true;
+                            }
+                            iprofs.splice(bestMatchIdx, 1); // Consume to prevent duplicates from stealing this row
+                        }
+                    }
+                });
+                return changed ? newRentabs : prev;
+            });
+        }
+    }, [quoteStatus?.profitability?.itemProfitabilities, data?.items, selectedPrices]);
 
     const hasStockIssue = data?.items?.some(i => i.stock < i.quantity) || false;
 
