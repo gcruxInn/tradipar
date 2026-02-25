@@ -188,7 +188,7 @@ async function getDealSankhyaContext(objectId, token) {
     try {
       const nunotaEnrich = props.orcamento_sankhya;
       console.log(`[DISCOVERY] Enriching items for NUNOTA ${nunotaEnrich}...`);
-      const sqlItens = `SELECT CODPROD, CONTROLE, PERCLUCRO FROM TGFITE WHERE NUNOTA = ${nunotaEnrich}`;
+      const sqlItens = `SELECT CODPROD, CONTROLE, PERCLUCRO, QTDNEG FROM TGFITE WHERE NUNOTA = ${nunotaEnrich}`;
       const tokenSankhya = await getAccessToken();
       const queryResp = await axios.post(`${baseUrl}/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json`, {
         serviceName: "DbExplorerSP.executeQuery",
@@ -198,20 +198,38 @@ async function getDealSankhyaContext(objectId, token) {
       const rowData = queryResp.data?.responseBody?.rows;
       if (rowData && rowData.length > 0) {
         // Map rows for faster lookup
-        const sankhyaMap = {};
-        rowData.forEach(row => {
-          const cp = row[0]; // CODPROD
-          sankhyaMap[cp] = {
-            controle: row[1],
-            profitability: parseFloat(String(row[2]).replace(',', '.')) || 0
-          };
-        });
+        const sankhyaItems = rowData.map(row => ({
+          codProd: parseInt(row[0], 10),
+          controle: row[1] || "",
+          profitability: parseFloat(String(row[2]).replace(',', '.')) || 0,
+          qtdNeg: parseFloat(row[3]) || 0
+        }));
 
-        // Update items
+        // Update items by best matching (codProd + controle + qty) to avoid duplicating same profit on different lots/prices
         items.forEach(item => {
-          if (sankhyaMap[item.codProd]) {
-            item.sankhyaControle = sankhyaMap[item.codProd].controle;
-            item.sankhyaProfitability = sankhyaMap[item.codProd].profitability;
+          let matchedIdx = sankhyaItems.findIndex(si =>
+            si.codProd === item.codProd &&
+            (item.sankhyaControle ? si.controle === item.sankhyaControle : true) &&
+            si.qtdNeg === item.quantity
+          );
+
+          if (matchedIdx === -1) {
+            matchedIdx = sankhyaItems.findIndex(si =>
+              si.codProd === item.codProd &&
+              (item.sankhyaControle ? si.controle === item.sankhyaControle : true)
+            );
+          }
+
+          if (matchedIdx === -1) {
+            matchedIdx = sankhyaItems.findIndex(si => si.codProd === item.codProd);
+          }
+
+          if (matchedIdx !== -1) {
+            const matchedSankhyaItem = sankhyaItems[matchedIdx];
+            item.sankhyaControle = matchedSankhyaItem.controle;
+            item.sankhyaProfitability = matchedSankhyaItem.profitability;
+            // Remove to prevent reusing the same row for duplicate HubSpot items
+            sankhyaItems.splice(matchedIdx, 1);
           }
         });
       }
@@ -1742,7 +1760,7 @@ async function getProfitabilityInternal(nunota, codemp = null) {
     const token = await getAccessToken();
     const url = `${baseUrl}/gateway/v1/mge/service.sbr?serviceName=LiberacaoLimitesSP.getDadosRentabilidade&outputType=json`;
 
-    const paramsObj = { nuNota: Number(nunota) };
+    const paramsObj = { nuNota: Number(nunota), recalcular: "true", recalcularRentabilidade: "true", atualizarRentabilidade: true };
     if (codemp) {
       paramsObj.CODEMP = Number(codemp);
     }
