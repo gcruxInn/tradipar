@@ -140,16 +140,14 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     const [quoteError, setQuoteError] = useState<string | null>(null);
     const [quoteSuccess, setQuoteSuccess] = useState<string | null>(null);
 
-    // Rentabilidade Alert State
-    const [rentabMessage, setRentabMessage] = useState<{ title: string, message: string, variant: "success" | "warning" | "danger" | "info" } | null>(null);
-
+    // Rentabilidade Alert Actions
     const handleViewRentabilidade = (item: ItemData) => {
         const actualRentab = optimisticProfitabilities[item.id] !== undefined ? optimisticProfitabilities[item.id] : item.sankhyaProfitability;
         if (actualRentab === undefined) {
-            setRentabMessage({ title: `Margem Pendente: ${item.name}`, message: "Como houve alterações neste item, você deve primeiro clicar em '🔄 Sincronizar com ERP' para que o Sankhya recalcule o custo efetivo e os impostos que determinam sua rentabilidade individual.", variant: "warning" });
+            actions.addAlert({ type: "warning", title: `Margem Pendente: ${item.name}`, message: "Como houve alterações neste item, você deve primeiro clicar em '🔄 Sincronizar com ERP' para que o Sankhya recalcule o custo efetivo e os impostos que determinam sua rentabilidade individual." });
         } else {
             const isRentavel = actualRentab >= 0;
-            setRentabMessage({ title: `Rentabilidade: ${item.name}`, message: `Margem do item: ${actualRentab.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 3 })}%`, variant: isRentavel ? "success" : "warning" });
+            actions.addAlert({ type: isRentavel ? "success" : "warning", title: `Rentabilidade: ${item.name}`, message: `Margem do item: ${actualRentab.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 3 })}%` });
         }
     };
 
@@ -915,14 +913,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                     {syncResult.message}
                                 </Alert>
                             )}
-                            {rentabMessage && (
-                                <Box>
-                                    <Alert title={rentabMessage.title} variant={rentabMessage.variant}>
-                                        {rentabMessage.message}
-                                    </Alert>
-                                    <Divider distance="small" />
-                                </Box>
-                            )}
+
                             <Table>
                                 <TableHead>
                                     <TableRow>
