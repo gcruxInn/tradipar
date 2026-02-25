@@ -1039,7 +1039,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                                             { label: (item.prices.pv1 || 0) > 0 ? `PV1: ${formatCurrency(item.prices.pv1)}` : "PV1: Sem Tabela", value: "pv1" },
                                                             { label: (item.prices.pv2 || 0) > 0 ? `PV2: ${formatCurrency(item.prices.pv2)}` : "PV2: Sem Tabela", value: "pv2" },
                                                             { label: (item.prices.pv3 || 0) > 0 ? `PV3: ${formatCurrency(item.prices.pv3)}` : "PV3: Sem Tabela", value: "pv3" },
-                                                            ...(getSelectedPV(item) === 'custom' ? [{ label: `Edit: ${formatCurrency(selectedPrices[item.id] || ((item.currentPrice || 0) * item.quantity))}`, value: "custom" }] : []),
+                                                            ...(getSelectedPV(item) === 'custom' ? [{ label: `Edit: ${formatCurrency((selectedPrices[item.id] || ((item.currentPrice || 0) * item.quantity)) / (item.quantity > 0 ? item.quantity : 1))}`, value: "custom" }] : []),
                                                             { label: "✏️ Definir Valor...", value: "edit_custom" }
                                                         ]}
                                                         onChange={(val) => {
