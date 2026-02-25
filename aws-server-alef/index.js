@@ -402,36 +402,62 @@ async function consultaPreco(codProd, codParc, codEmp, seqPv) {
 }
 
 // Optimized: Fetch all 3 prices in one query
+const PRICE_CACHE = new Map();
+const IN_FLIGHT_PRICES = new Map();
 async function consultaTodosPrecos(codProd, codParc, codEmp) {
-  const sql = `
-    SELECT 
-      AD_PRECO_TRADIPAR(${codProd}, ${codParc}, ${codEmp}, 1) AS PV1,
-      AD_PRECO_TRADIPAR(${codProd}, ${codParc}, ${codEmp}, 2) AS PV2,
-      AD_PRECO_TRADIPAR(${codProd}, ${codParc}, ${codEmp}, 3) AS PV3
-    FROM DUAL
-  `;
-  const response = await postGatewayWithRetry({ requestBody: { sql } });
+  const cacheKey = `${codProd}-${codParc}-${codEmp}`;
 
-  // Custom parsing because it returns one row with 3 columns
-  const rb = response.data?.responseBody;
-  let row = null;
-  if (rb?.rows && rb.rows.length) row = rb.rows[0];
-  else if (rb?.resultSet?.rows && rb.resultSet.rows.length) {
-    // Helper to extract value from object format { $: "value" }
-    const r = rb.resultSet.rows[0];
-    row = [r.PV1?.$ || r.PV1, r.PV2?.$ || r.PV2, r.PV3?.$ || r.PV3];
+  if (PRICE_CACHE.has(cacheKey)) {
+    const { val, ts } = PRICE_CACHE.get(cacheKey);
+    if (Date.now() - ts < CACHE_TTL_MS) return val;
   }
 
-  if (row) {
-    return {
-      pv1: Number(row[0] || 0),
-      pv2: Number(row[1] || 0),
-      pv3: Number(row[2] || 0)
-    };
+  if (IN_FLIGHT_PRICES.has(cacheKey)) {
+    return IN_FLIGHT_PRICES.get(cacheKey);
   }
-  return { pv1: 0, pv2: 0, pv3: 0 };
+
+  const reqPromise = (async () => {
+    try {
+      const sql = `
+        SELECT 
+          AD_PRECO_TRADIPAR(${codProd}, ${codParc}, ${codEmp}, 1) AS PV1,
+          AD_PRECO_TRADIPAR(${codProd}, ${codParc}, ${codEmp}, 2) AS PV2,
+          AD_PRECO_TRADIPAR(${codProd}, ${codParc}, ${codEmp}, 3) AS PV3
+        FROM DUAL
+      `;
+      const response = await postGatewayWithRetry({ requestBody: { sql } });
+
+      let row = null;
+      const rb = response.data?.responseBody;
+      if (rb?.rows && rb.rows.length) row = rb.rows[0];
+      else if (rb?.resultSet?.rows && rb.resultSet.rows.length) {
+        const r = rb.resultSet.rows[0];
+        row = [r.PV1?.$ || r.PV1, r.PV2?.$ || r.PV2, r.PV3?.$ || r.PV3];
+      }
+
+      let result = { pv1: 0, pv2: 0, pv3: 0 };
+      if (row) {
+        result = {
+          pv1: Number(row[0] || 0),
+          pv2: Number(row[1] || 0),
+          pv3: Number(row[2] || 0)
+        };
+      }
+
+      PRICE_CACHE.set(cacheKey, { val: result, ts: Date.now() });
+      IN_FLIGHT_PRICES.delete(cacheKey);
+      return result;
+    } catch (err) {
+      IN_FLIGHT_PRICES.delete(cacheKey);
+      throw err;
+    }
+  })();
+
+  IN_FLIGHT_PRICES.set(cacheKey, reqPromise);
+  return reqPromise;
 }
 
+const IN_FLIGHT_STK = new Map();
 async function consultaEstoque(codProd, codEmp) {
   const cacheKey = `${codProd}-${codEmp}`;
   if (STK_CACHE.has(cacheKey)) {
@@ -439,24 +465,34 @@ async function consultaEstoque(codProd, codEmp) {
     if (Date.now() - ts < CACHE_TTL_MS) return val;
   }
 
-  try {
-    const sql = `SELECT SUM(ESTOQUE - RESERVADO) AS DISPONIVEL FROM TGFEST WHERE CODPROD = ${codProd} AND CODEMP = ${codEmp}`;
-    // console.log(`[STK] SQL: ${sql}`); // VERBOSE
-    const response = await postGatewayWithRetry({ requestBody: { sql } });
-
-    // Safer parsing
-    let val = 0;
-    try {
-      val = parseDbExplorerFirstValue(response.data) || 0;
-    } catch (e) { console.warn(`[STK] Parse error for ${codProd}:`, e.message); }
-
-    STK_CACHE.set(cacheKey, { val, ts: Date.now() });
-    return val;
-
-  } catch (e) {
-    console.error(`[STK] Error querying stock for ${codProd}:`, e.message);
-    return 0; // Fallback to 0 instead of crash
+  if (IN_FLIGHT_STK.has(cacheKey)) {
+    return IN_FLIGHT_STK.get(cacheKey);
   }
+
+  const reqPromise = (async () => {
+    try {
+      const sql = `SELECT SUM(ESTOQUE - RESERVADO) AS DISPONIVEL FROM TGFEST WHERE CODPROD = ${codProd} AND CODEMP = ${codEmp}`;
+      const response = await postGatewayWithRetry({ requestBody: { sql } });
+
+      let val = 0;
+      try {
+        val = parseDbExplorerFirstValue(response.data) || 0;
+      } catch (e) {
+        console.warn(`[STK] Parse error for ${codProd}:`, e.message);
+      }
+
+      STK_CACHE.set(cacheKey, { val, ts: Date.now() });
+      IN_FLIGHT_STK.delete(cacheKey);
+      return val;
+    } catch (e) {
+      console.error(`[STK] Error querying stock for ${codProd}:`, e.message);
+      IN_FLIGHT_STK.delete(cacheKey);
+      return 0; // Fallback to 0 instead of crash
+    }
+  })();
+
+  IN_FLIGHT_STK.set(cacheKey, reqPromise);
+  return reqPromise;
 }
 
 /**
@@ -1745,6 +1781,24 @@ async function getProfitabilityInternal(nunota, codemp = null) {
       return parseFloat(String(str).replace(',', '.').replace('%', '')) || 0;
     };
 
+    const extractProducts = (prodData) => {
+      if (!prodData || !prodData.entities || !prodData.entities.entity) return [];
+      const ent = prodData.entities.entity;
+      const items = Array.isArray(ent) ? ent : [ent];
+      return items.map(i => ({
+        codProd: String(i.CODPROD?.$ || ''),
+        percentMC: parsePercent(i.PERCENTMC?.$),
+        percentLucro: parsePercent(i.PERCENTLUCRO?.$),
+        faturamento: parseFloat(i.FATURAMENTO?.$) || 0,
+        lucro: parseFloat(i.LUCRO?.$) || 0
+      }));
+    };
+
+    const itemProfitabilities = [
+      ...extractProducts(data.produtosComCusto),
+      ...extractProducts(data.produtosSemCusto)
+    ];
+
     const profitability = {
       nunota: Number(nunota),
       faturamento: parseFloat(data.somaFaturamento) || 0,
@@ -1759,7 +1813,8 @@ async function getProfitabilityInternal(nunota, codemp = null) {
       percentGV: parsePercent(data.percentGV),
       percentGF: parsePercent(data.percentGF),
       isRentavel: parseFloat(data.somaLucro) > 0,
-      qtdItens: parseInt(data.contItens) || 0
+      qtdItens: parseInt(data.contItens) || 0,
+      itemProfitabilities
     };
 
     console.log(`[PROFITABILITY SUCCESS] NUNOTA ${nunota}: Lucro=${profitability.lucro}, RentÃ¡vel=${profitability.isRentavel}`);
@@ -2678,7 +2733,7 @@ app.post("/hubspot/duplicate-line-item", async (req, res) => {
     console.log(`[DUPLICATE-ITEM] Duplicando item ${lineItemId} no Deal ${dealId}...`);
 
     // 1. Buscar propriedades do item original
-    const getResp = await axios.get(`https://api.hubapi.com/crm/v3/objects/line_items/${lineItemId}?properties=name,quantity,price,sankhya_codprod,codprod,hs_product_id,hs_sku,parceiro`, {
+    const getResp = await axios.get(`https://api.hubapi.com/crm/v3/objects/line_items/${lineItemId}?properties=name,quantity,price,sankhya_codprod,codprod,hs_product_id,hs_sku,parceiro,sankhya_controle,controle`, {
       headers: { Authorization: `Bearer ${hubspotToken}` }
     });
     const props = getResp.data.properties;
@@ -2693,7 +2748,9 @@ app.post("/hubspot/duplicate-line-item", async (req, res) => {
         sankhya_codprod: props.sankhya_codprod || props.codprod || props.hs_sku,
         codprod: props.sankhya_codprod || props.codprod || props.hs_sku,
         hs_sku: props.hs_sku || props.sankhya_codprod || props.codprod,
-        parceiro: props.parceiro // Copy CodParceiro explicitly
+        parceiro: props.parceiro, // Copy CodParceiro explicitly
+        sankhya_controle: props.sankhya_controle || props.controle || "",
+        controle: props.controle || props.sankhya_controle || ""
       }
     }, { headers: { Authorization: `Bearer ${hubspotToken}` } });
 
@@ -2816,24 +2873,29 @@ app.post("/hubspot/sync-quote-items", async (req, res) => {
 
     // 2. Fetch existing items in Sankhya (Target State)
     console.log(`[SYNC] Querying existing items for NUNOTA ${nunota}...`);
-    const sql = `SELECT SEQUENCIA, CODPROD, QTDNEG, VLRUNIT, CONTROLE, CODVOL FROM TGFITE WHERE NUNOTA = ${nunota}`;
+    const sql = `SELECT SEQUENCIA, CODPROD, QTDNEG, VLRUNIT, CONTROLE, CODVOL, CODLOCALORIG FROM TGFITE WHERE NUNOTA = ${nunota}`;
     const queryResp = await postGatewayWithRetry({ requestBody: { sql } });
     const rows = queryResp.data?.responseBody?.rows || [];
 
     // Map existing items by CODPROD for easy lookup
-    // existingItems: { [codProd_controle]: { sequencia, codProd, qtd, price, controle, codVol } }
+    // existingItems: { [codProd_controle]: { sequencia, codProd, qtd, price, controle, codVol, codLocalOrig } }
     const existingItems = {};
+    let maxSequencia = 0;
     rows.forEach(r => {
       const dbCodProd = r[1];
       const dbControle = r[4] || "";
+      const seq = parseInt(r[0], 10);
+      if (seq > maxSequencia) maxSequencia = seq;
+
       const key = `${dbCodProd}_${dbControle}`;
       existingItems[key] = {
-        sequencia: r[0],
+        sequencia: seq,
         codProd: dbCodProd,
         qtd: parseFloat(r[2]),
         price: parseFloat(r[3]),
         controle: dbControle,
-        codVol: r[5] || "UN"
+        codVol: r[5] || "UN",
+        codLocalOrig: r[6] !== undefined ? parseInt(r[6], 10) : undefined
       };
     });
 
@@ -2874,40 +2936,51 @@ app.post("/hubspot/sync-quote-items", async (req, res) => {
 
       try {
         let codVol = existing?.codVol || 'UN';
-        let codLocalOrig = 0; // Default fallback, though we want to avoid 0 if possible
+        let codLocalOrig = existing?.codLocalOrig;
 
-        try {
-          if (!existing) {
-            const volSql = `SELECT CODVOL FROM TGFPRO WHERE CODPROD = ${codProd}`;
-            const volResp = await postGatewayWithRetry({ requestBody: { sql: volSql } });
-            codVol = volResp.data?.responseBody?.rows?.[0]?.[0] || 'UN';
-          }
+        if (codLocalOrig === undefined || codLocalOrig === null || isNaN(codLocalOrig)) {
+          try {
+            if (!existing) {
+              const volSql = `SELECT CODVOL FROM TGFPRO WHERE CODPROD = ${codProd}`;
+              const volResp = await postGatewayWithRetry({ requestBody: { sql: volSql } });
+              codVol = volResp.data?.responseBody?.rows?.[0]?.[0] || 'UN';
+            }
 
-          // Fetch valid CODLOCAL from stock (TGFEST) to avoid '<SEM LOCAL>' error
-          const controleSafe = hsControle.trim();
-          const localSql = `SELECT MAX(CODLOCAL) FROM TGFEST WHERE CODPROD = ${codProd} AND CODEMP = ${ctx.codEmp} ${controleSafe ? `AND CONTROLE = '${controleSafe}'` : "AND (CONTROLE IS NULL OR CONTROLE = '' OR CONTROLE = ' ')"} AND ESTOQUE > 0`;
-          const localResp = await postGatewayWithRetry({ requestBody: { sql: localSql } });
-          const foundLocal = localResp.data?.responseBody?.rows?.[0]?.[0];
-
-          if (foundLocal !== undefined && foundLocal !== null) {
-            codLocalOrig = parseInt(foundLocal, 10);
-            console.log(`[SYNC LOCAL] Encontrado CODLOCAL ${codLocalOrig} para CODPROD ${codProd}`);
-          } else {
-            // If no stock found, try TGFPRO defaults
+            // Fetch valid CODLOCAL from TGFPRO (Default Local) instead of random stock locations
             const prodSql = `SELECT CODLOCALPADRAO FROM TGFPRO WHERE CODPROD = ${codProd}`;
             const prodResp = await postGatewayWithRetry({ requestBody: { sql: prodSql } });
             const prodLocal = prodResp.data?.responseBody?.rows?.[0]?.[0];
-            if (prodLocal !== undefined && prodLocal !== null) {
+
+            if (prodLocal !== undefined && prodLocal !== null && prodLocal !== "0") {
               codLocalOrig = parseInt(prodLocal, 10);
               console.log(`[SYNC LOCAL] Usando CODLOCALPADRAO ${codLocalOrig} para CODPROD ${codProd}`);
             } else {
-              console.warn(`[SYNC WARNING] Não foi possível determinar um CODLOCAL válido para CODPROD ${codProd}. Usando 10000 como fallback.`);
-              codLocalOrig = 10000; // Common fallback local in Sankhya, avoiding 0
+              console.warn(`[SYNC WARNING] Não foi possível determinar um CODLOCALPADRAO válido para CODPROD ${codProd}. Usando 10000 como fallback.`);
+              codLocalOrig = 10000; // Common fallback local in Sankhya, avoiding 0 and restricted locals
             }
+          } catch (e) {
+            console.warn(`Error fetching vol/local for ${codProd}`, e);
+            codLocalOrig = 10000; // Safe fallback
           }
-        } catch (e) {
-          console.warn(`Error fetching vol/local for ${codProd}`, e);
-          codLocalOrig = 10000; // Safe fallback
+        }
+
+        const itemData = {
+          NUNOTA: { "$": nunota },
+          CODPROD: { "$": codProd },
+          QTDNEG: { "$": item.quantity },
+          VLRUNIT: { "$": item.currentPrice || 0 },
+          VLRTOT: { "$": (item.quantity * (item.currentPrice || 0)) },
+          CODVOL: { "$": codVol },
+          CODLOCALORIG: { "$": codLocalOrig },
+          PERCDESC: { "$": 0 },
+          VLRDESC: { "$": 0 },
+          CONTROLE: { "$": hsControle }
+        };
+
+        if (action === "UPDATE") {
+          itemData.SEQUENCIA = { "$": existing.sequencia };
+        } else if (action === "CREATE") {
+          itemData.SEQUENCIA = { "$": "" };
         }
 
         const insertPayload = {
@@ -2916,19 +2989,8 @@ app.post("/hubspot/sync-quote-items", async (req, res) => {
             nota: {
               NUNOTA: nunota.toString(), // Required as attribute on nota
               itens: {
-                item: {
-                  NUNOTA: { "$": nunota },
-                  SEQUENCIA: action === "UPDATE" ? { "$": existing.sequencia } : { "$": "" },
-                  CODPROD: { "$": codProd },
-                  QTDNEG: { "$": item.quantity },
-                  VLRUNIT: { "$": item.currentPrice || 0 },
-                  VLRTOT: { "$": (item.quantity * (item.currentPrice || 0)) },
-                  CODVOL: { "$": codVol },
-                  CODLOCALORIG: { "$": codLocalOrig },
-                  PERCDESC: { "$": 0 },
-                  VLRDESC: { "$": 0 },
-                  CONTROLE: { "$": hsControle }
-                }
+                INFORMARPRECO: "True",
+                item: itemData
               }
             }
           }
@@ -2958,15 +3020,25 @@ app.post("/hubspot/sync-quote-items", async (req, res) => {
         const existing = existingItems[key];
         console.log(`[SYNC ACTION: DELETE] Item ${key} (Seq: ${existing.sequencia}) no longer in HubSpot.`);
         try {
-          await axios.post(`${baseUrl}/gateway/v1/mgecom/service.sbr?serviceName=CACSP.excluirItemNota&outputType=json`, {
+          const delResp = await axios.post(`${baseUrl}/gateway/v1/mgecom/service.sbr?serviceName=CACSP.excluirItemNota&outputType=json`, {
             serviceName: "CACSP.excluirItemNota",
             requestBody: {
-              item: { // Formato correto conforme a documentacao fornecida
-                NUNOTA: { "$": nunota },
-                SEQUENCIA: { "$": existing.sequencia }
+              nota: {
+                NUNOTA: nunota.toString(),
+                itens: {
+                  item: {
+                    NUNOTA: { "$": nunota },
+                    SEQUENCIA: { "$": existing.sequencia }
+                  }
+                }
               }
             }
           }, { headers: { Authorization: `Bearer ${token}` } });
+
+          if (delResp.data.status !== "1") {
+            throw new Error(delResp.data.statusMessage || JSON.stringify(delResp.data));
+          }
+
           console.log(`[SYNC SUCCESS] Item ${key} deleted.`);
         } catch (delErr) {
           console.error(`[SYNC DELETE ERROR] Failed to delete item ${key}: ${delErr.message}`);

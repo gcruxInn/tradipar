@@ -79,6 +79,7 @@ interface Profitability {
     percentGF: number;
     isRentavel: boolean;
     qtdItens: number;
+    itemProfitabilities?: any[];
 }
 
 interface PrecosResponse {
@@ -139,6 +140,38 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     const [quoteError, setQuoteError] = useState<string | null>(null);
     const [quoteSuccess, setQuoteSuccess] = useState<string | null>(null);
 
+    // Rentabilidade Alert State
+    const [rentabMessage, setRentabMessage] = useState<{ title: string, message: string, variant: "success" | "warning" | "danger" | "info" } | null>(null);
+
+    const handleViewRentabilidade = (item: ItemData) => {
+        const actualRentab = optimisticProfitabilities[item.id] !== undefined ? optimisticProfitabilities[item.id] : item.sankhyaProfitability;
+        if (actualRentab === undefined) {
+            setRentabMessage({ title: `Margem Pendente: ${item.name}`, message: "Como houve alterações neste item, você deve primeiro clicar em '🔄 Sincronizar com ERP' para que o Sankhya recalcule o custo efetivo e os impostos que determinam sua rentabilidade individual.", variant: "warning" });
+        } else {
+            const isRentavel = actualRentab >= 0;
+            setRentabMessage({ title: `Rentabilidade: ${item.name}`, message: `Margem do item: ${actualRentab.toFixed(2)}%`, variant: isRentavel ? "success" : "warning" });
+        }
+    };
+
+    // Sincroniza Rentabilidade Real do Sankhya com a Memória Local dos Itens
+    useEffect(() => {
+        if (quoteStatus && quoteStatus.profitability && quoteStatus.profitability.itemProfitabilities && data?.items) {
+            setOptimisticProfitabilities(prev => {
+                const newRentabs = { ...prev };
+                const iprofs = quoteStatus!.profitability!.itemProfitabilities!;
+                let changed = false;
+                data.items.forEach(item => {
+                    const match = iprofs.find((p: any) => p.codProd === String(item.codProd));
+                    if (match && newRentabs[item.id] !== match.percentLucro) {
+                        newRentabs[item.id] = match.percentLucro;
+                        changed = true;
+                    }
+                });
+                return changed ? newRentabs : prev;
+            });
+        }
+    }, [quoteStatus?.profitability?.itemProfitabilities, data?.items]);
+
     // Sync State
     const [syncing, setSyncing] = useState(false);
     const [syncResult, setSyncResult] = useState<{ message?: string, success: boolean } | null>(null);
@@ -181,7 +214,8 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
     // Custom Price State
     const [customPriceItemId, setCustomPriceItemId] = useState<string | null>(null);
-    const [customPriceValue, setCustomPriceValue] = useState<number | undefined>(undefined);
+    const [customPriceValue, setCustomPriceValue] = useState<number | undefined>();
+    const [optimisticProfitabilities, setOptimisticProfitabilities] = useState<Record<string, number>>({});
     const [customUnitPriceValue, setCustomUnitPriceValue] = useState<number | undefined>(undefined);
 
     // Selected prices per item
@@ -423,6 +457,15 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         const newItemTotal = unitPrice * item.quantity;
         setSelectedPrices(prev => ({ ...prev, [itemId]: newItemTotal }));
 
+        // Optimistic Profitability Update
+        const oldPrice = item.currentPrice || 0;
+        const oldRentab = item.sankhyaProfitability || 0;
+        if (oldPrice > 0) {
+            const estimatedCost = oldPrice * (1 - (oldRentab / 100));
+            const newRentab = unitPrice > 0 ? ((unitPrice - estimatedCost) / unitPrice) * 100 : 0;
+            setOptimisticProfitabilities(prev => ({ ...prev, [itemId]: newRentab }));
+        }
+
         // Calculate and Save new Global Total immediately
         const newGlobalTotal = data.items.reduce((sum, curr) => {
             if (curr.id === itemId) return sum + newItemTotal;
@@ -519,10 +562,24 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 method: "POST", body: { dealId: context.crm.objectId, lineItemId }
             });
             const res = await resp.json();
-            if (res.success) {
+            if (res.success && res.newLineItemId) {
+                // Herança de Rentabilidade: Copia da memória (optimistic) ou do item original para resolver bug visual do item clonado 'sem tabela/rentabilidade'
+                setOptimisticProfitabilities(prev => {
+                    const originalProfitability = prev[lineItemId] !== undefined
+                        ? prev[lineItemId]
+                        : (data?.items.find(i => i.id === lineItemId)?.sankhyaProfitability);
+
+                    if (originalProfitability !== undefined) {
+                        return { ...prev, [res.newLineItemId]: originalProfitability };
+                    }
+                    return prev;
+                });
+
                 onRefreshProperties();
                 fetchPrices(); // Re-fetch para sincronizar tudo
-            } else setError(res.error);
+            } else if (!res.success) {
+                setError(res.error);
+            }
         } catch (e: any) { setError(e.message); }
         finally { setDuplicatingItemId(null); }
     };
@@ -723,7 +780,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             <Flex direction="column" gap="md">
                 <Tile>
                     <Flex direction="column" gap="md">
-                        <Text format={{ fontWeight: "bold", fontSize: "lg" }}>🔗 Status da Conexão Sankhya</Text>
+                        <Text format={{ fontWeight: "bold" }}>🔗 Status da Conexão Sankhya</Text>
 
 
                         <Flex gap="sm" wrap="wrap">
@@ -799,6 +856,21 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     };
 
     // --- STEP 2: GESTÃO DE PRODUTOS (Items Hub) ---
+    const handleRowClickSync = async (e: React.MouseEvent) => {
+        // Ignora se o clique for em botões, inputs, select (prevenir cliques na própria linha acionando inputs)
+        if ((e.target as HTMLElement).closest('button, input, select')) return;
+
+        if (!quoteStatus?.nunota || syncing) return;
+
+        // Background silent sync
+        hubspot.fetch("https://api.gcrux.com/hubspot/sync-quote-items", {
+            method: "POST",
+            body: { dealId: context.crm.objectId, nunota: quoteStatus.nunota }
+        }).then((resp) => resp.json()).then((res) => {
+            if (res.success) fetchPrices();
+        }).catch(err => console.error(err));
+    };
+
     const renderStep2 = () => {
         return (
             <Flex direction="column" gap="large">
@@ -812,7 +884,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                 <Flex gap="sm">
                                     {quoteStatus?.nunota && !quoteStatus.isConfirmed && (
                                         <Button size="sm" onClick={handleSyncToERP} disabled={syncing} variant="secondary">
-                                            {syncing ? "Sincronizando..." : "🔄 Atualizar no ERP"}
+                                            {syncing ? "Sincronizando..." : "🔄 Sincronizar com ERP"}
                                         </Button>
                                     )}
                                     <Button size="sm" onClick={() => handleApplyAllItemsPV("pv1")}>Aplicar PV1 em Tudo</Button>
@@ -822,6 +894,14 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                 <Alert title={syncResult.success ? "Sucesso" : "Erro"} variant={syncResult.success ? "success" : "danger"}>
                                     {syncResult.message}
                                 </Alert>
+                            )}
+                            {rentabMessage && (
+                                <Box>
+                                    <Alert title={rentabMessage.title} variant={rentabMessage.variant}>
+                                        {rentabMessage.message}
+                                    </Alert>
+                                    <Divider distance="small" />
+                                </Box>
                             )}
                             <Table>
                                 <TableHead>
@@ -845,6 +925,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                         <TableRow key={item.id}>
                                             <TableCell>
                                                 <Dropdown buttonText="Opções" variant="secondary" buttonSize="xs">
+                                                    <Dropdown.ButtonItem onClick={() => handleViewRentabilidade(item)}>📊 Ver Rentabilidade</Dropdown.ButtonItem>
                                                     <Dropdown.ButtonItem onClick={() => handleDuplicateItem(item.id)}>📑 Duplicar</Dropdown.ButtonItem>
                                                     <Dropdown.ButtonItem onClick={() => handleDeleteItem(item.id)}>🗑️ Excluir</Dropdown.ButtonItem>
                                                 </Dropdown>
@@ -899,10 +980,10 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                                                 value: c.controle
                                                             }))}
                                                         value={item.sankhyaControle || ""}
-                                                        onChange={(val) => handleUpdateItemControl(item.id, val)}
+                                                        onChange={(val) => handleUpdateItemControl(item.id, val as string)}
                                                         placeholder="Selecione..."
                                                     />
-                                                ) : <LoadingSpinner size="sm" />}
+                                                ) : <LoadingSpinner size="sm" label="Carregando..." />}
                                             </TableCell>
                                             <TableCell>
                                                 {customPriceItemId === item.id ? (
@@ -938,7 +1019,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                                             { label: (item.prices.pv1 || 0) > 0 ? `PV1: ${formatCurrency(item.prices.pv1)}` : "PV1: Sem Tabela", value: "pv1" },
                                                             { label: (item.prices.pv2 || 0) > 0 ? `PV2: ${formatCurrency(item.prices.pv2)}` : "PV2: Sem Tabela", value: "pv2" },
                                                             { label: (item.prices.pv3 || 0) > 0 ? `PV3: ${formatCurrency(item.prices.pv3)}` : "PV3: Sem Tabela", value: "pv3" },
-                                                            ...(getSelectedPV(item) === 'custom' ? [{ label: `Edit: ${formatCurrency(selectedPrices[item.id] || ((item.prices.custom || item.currentPrice || 0) * item.quantity))}`, value: "custom" }] : []),
+                                                            ...(getSelectedPV(item) === 'custom' ? [{ label: `Edit: ${formatCurrency(selectedPrices[item.id] || ((item.currentPrice || 0) * item.quantity))}`, value: "custom" }] : []),
                                                             { label: "✏️ Definir Valor...", value: "edit_custom" }
                                                         ]}
                                                         onChange={(val) => {
@@ -1029,9 +1110,20 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                     {/* Tab 'details' removed */}
                 </Tabs>
 
+                {quoteStatus?.profitability && !quoteStatus.profitability.isRentavel && (
+                    <Alert title="Negócio com Prejuízo" variant="error">
+                        Atenção: Você deve ajustar os preços ou quantidades. O orçamento atual apresenta prejuízo financeiro e está bloqueado para fechamento.
+                    </Alert>
+                )}
                 <Flex gap="sm" justify="between">
                     <Button onClick={() => setCurrentStep(0)} variant="secondary">&larr; Voltar para Conexão</Button>
-                    <Button onClick={() => setCurrentStep(2)} variant="primary">Ir para Fechamento &rarr;</Button>
+                    <Button
+                        onClick={() => setCurrentStep(2)}
+                        variant="primary"
+                        disabled={quoteStatus?.profitability && !quoteStatus.profitability.isRentavel}
+                    >
+                        Ir para Fechamento &rarr;
+                    </Button>
                 </Flex>
             </Flex>
         );
@@ -1057,9 +1149,21 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                         </Flex>
                         <Divider />
                         <Flex gap="md">
-                            <Button variant="primary" onClick={() => handleSaveAmount()}>✓ Aplicar e Sincronizar HubSpot</Button>
+                            <Button variant="secondary" onClick={() => handleSaveAmount()}>✓ Sincronizar Últimos Valores</Button>
+
+                            {(quoteStatus?.buttonAction === "CONFIRM_QUOTE" || quoteStatus?.buttonAction === "GENERATE_PDF") && (
+                                <Button
+                                    variant="primary"
+                                    onClick={handleQuoteAction}
+                                    disabled={quoteLoading}
+                                >
+                                    {quoteLoading ? "Processando..." : quoteStatus.buttonLabel}
+                                </Button>
+                            )}
                         </Flex>
                         {saveSuccess && <Alert title="Sucesso" variant="success">Valores sincronizados com o HubSpot!</Alert>}
+                        {quoteError && <Alert title="Aviso" variant="warning">{quoteError}</Alert>}
+                        {quoteSuccess && <Alert title="Orçamento Confirmado" variant="success">{quoteSuccess}</Alert>}
                     </Flex>
                 </Tile>
                 <Button onClick={() => setCurrentStep(1)} variant="secondary">&larr; Voltar para Itens</Button>
