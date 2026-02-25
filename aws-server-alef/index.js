@@ -2015,25 +2015,33 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
       });
     }
 
-    // 2. Confirmar nota no Sankhya via SQL UPDATE
+    // 2. Confirmar nota no Sankhya via CRUDServiceProvider.saveRecord
     const token = await getAccessToken();
 
-    // SQL UPDATE Solution (Direct Database Update)
-    // Why: ServiceController APIs not available in current Sankhya libraries
-    // Trade-off: Doesn't trigger all business rules but updates status successfully
-    console.log(`[CONFIRM-QUOTE] Using SQL UPDATE to confirm NUNOTA ${nunota}...`);
-
-    const sqlQuery = `UPDATE TGFCAB SET STATUSNOTA = 'L' WHERE NUNOTA = ${nunota} AND STATUSNOTA = 'P'`;
+    // Usar CRUDServiceProvider ao invés de DbExplorerSP (que só permite SELECT)
+    console.log(`[CONFIRM-QUOTE] Using CRUDServiceProvider to confirm NUNOTA ${nunota}...`);
 
     const confirmPayload = {
-      serviceName: "DbExplorerSP.executeQuery",
+      serviceName: "CRUDServiceProvider.saveRecord",
       requestBody: {
-        sql: sqlQuery
+        dataSet: {
+          rootEntity: "CabecalhoNota",
+          includePresentationFields: "N",
+          dataRow: {
+            localFields: {
+              NUNOTA: nunota,
+              STATUSNOTA: "L"
+            },
+            key: {
+              NUNOTA: nunota
+            }
+          }
+        }
       }
     };
 
     const confirmResp = await axios.post(
-      `${baseUrl}/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json`,
+      `${baseUrl}/gateway/v1/mge/service.sbr?serviceName=CRUDServiceProvider.saveRecord&outputType=json`,
       confirmPayload,
       {
         headers: {
@@ -2043,20 +2051,14 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
       }
     );
 
-    console.log(`[CONFIRM-QUOTE] SQL UPDATE response:`, JSON.stringify(confirmResp.data));
+    console.log(`[CONFIRM-QUOTE] CRUD response:`, JSON.stringify(confirmResp.data));
 
     // Check for success
     if (confirmResp.data.status !== "1") {
-      throw new Error(`SQL UPDATE failed: ${JSON.stringify(confirmResp.data)}`);
+      throw new Error(`CRUD saveRecord failed: ${confirmResp.data.statusMessage || JSON.stringify(confirmResp.data)}`);
     }
 
-    // Verify rows affected (should be in response)
-    const rowsAffected = confirmResp.data.responseBody?.rows || 0;
-    if (rowsAffected === 0) {
-      throw new Error(`NUNOTA ${nunota} not found or already confirmed`);
-    }
-
-    console.log(`[CONFIRM-QUOTE] NUNOTA ${nunota} confirmed successfully via SQL UPDATE (${rowsAffected} rows affected)`);
+    console.log(`[CONFIRM-QUOTE] NUNOTA ${nunota} confirmed successfully via CRUDServiceProvider`);
 
     // 2.2. Atualizar Deal no HubSpot com a confirmaÃ§Ã£o (sankhya_nunota)
     console.log(`[CONFIRM-QUOTE] Marcando Deal ${dealId} como confirmado no HubSpot...`);
