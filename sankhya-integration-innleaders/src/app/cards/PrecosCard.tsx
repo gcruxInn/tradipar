@@ -149,7 +149,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             setRentabMessage({ title: `Margem Pendente: ${item.name}`, message: "Como houve alterações neste item, você deve primeiro clicar em '🔄 Sincronizar com ERP' para que o Sankhya recalcule o custo efetivo e os impostos que determinam sua rentabilidade individual.", variant: "warning" });
         } else {
             const isRentavel = actualRentab >= 0;
-            setRentabMessage({ title: `Rentabilidade: ${item.name}`, message: `Margem do item: ${actualRentab.toFixed(2)}%`, variant: isRentavel ? "success" : "warning" });
+            setRentabMessage({ title: `Rentabilidade: ${item.name}`, message: `Margem do item: ${actualRentab.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 3 })}%`, variant: isRentavel ? "success" : "warning" });
         }
     };
 
@@ -280,7 +280,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
     const formatPercent = (value: number | undefined): string => {
         if (value === undefined || value === null) return "---";
-        return `${value.toFixed(2)}%`;
+        return `${value.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 3 })}%`;
     };
 
     // Initial Load
@@ -522,7 +522,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         if (customPriceItemId && customPriceValue !== undefined && data) {
             const item = data.items.find(i => i.id === customPriceItemId);
             if (item && item.quantity > 0) {
-                const unitPrice = customPriceValue / item.quantity;
+                const unitPrice = customPriceValue;
                 // Optimistic UI updates are now handled inside handleApplyItemPrice via forceType
                 handleApplyItemPrice(customPriceItemId, unitPrice, 'custom');
             }
