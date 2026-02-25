@@ -121,6 +121,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     // Performance Control
     const isFetching = useRef(false);
     const debounceTimer = useRef<any | null>(null);
+    const autoSyncTimer = useRef<any | null>(null);
 
     // Amount State
     const [amount, setAmount] = useState<number | undefined>(undefined);
@@ -155,6 +156,21 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     // Sync State
     const [syncing, setSyncing] = useState(false);
     const [syncResult, setSyncResult] = useState<{ message?: string, success: boolean } | null>(null);
+
+    // Auto-sync: schedule ERP sync after price/quantity changes (debounced 2s)
+    const scheduleAutoSync = () => {
+        if (autoSyncTimer.current) clearTimeout(autoSyncTimer.current);
+        autoSyncTimer.current = setTimeout(() => {
+            if (quoteStatus?.nunota && !syncing) {
+                handleSyncToERP(true); // silent = true
+            }
+        }, 2000);
+    };
+
+    // Cleanup auto-sync timer on unmount
+    useEffect(() => {
+        return () => { if (autoSyncTimer.current) clearTimeout(autoSyncTimer.current); };
+    }, []);
 
     // Batch Control State
     const [availableControls, setAvailableControls] = useState<Record<string, { controle: string, saldo: number }[]>>({});
@@ -463,6 +479,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 handleSaveAmount(newGlobalTotal);
             }
             onRefreshProperties(); // Sync HubSpot UI
+            scheduleAutoSync(); // Auto-sync com ERP após mudança de quantidade
         } catch (err) {
             console.error(err);
         }
@@ -509,6 +526,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             });
             setSaveSuccess(true);
             onRefreshProperties(); // Sync HubSpot UI
+            scheduleAutoSync(); // Auto-sync com ERP após mudança de preço
             setTimeout(() => setSaveSuccess(false), 3000);
         } catch (err) {
             console.error(err);
@@ -845,11 +863,11 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         );
     };
 
-    const handleSyncToERP = async () => {
+    const handleSyncToERP = async (silent: boolean = false) => {
         if (!quoteStatus?.nunota) return;
 
         setSyncing(true);
-        setSyncResult(null);
+        if (!silent) setSyncResult(null);
 
         try {
             const resp = await hubspot.fetch("https://api.gcrux.com/hubspot/sync-quote-items", {
@@ -860,14 +878,23 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             const res = await resp.json();
 
             if (res.success) {
-                setSyncResult({ success: true, message: "Sincronizado com sucesso!" });
+                if (!silent) {
+                    setSyncResult({ success: true, message: "Sincronizado com sucesso!" });
+                    setTimeout(() => setSyncResult(null), 3000);
+                }
                 fetchPrices();
-                setTimeout(() => setSyncResult(null), 3000);
+                fetchQuoteStatus(); // Atualiza Análise de Rentabilidade
             } else {
-                setSyncResult({ success: false, message: res.error || "Erro na sincronização." });
+                if (!silent) {
+                    setSyncResult({ success: false, message: res.error || "Erro na sincronização." });
+                } else {
+                    actions.addAlert({ type: "danger", title: "Erro na sincronização automática", message: res.error || "Erro ao sincronizar com ERP." });
+                }
             }
         } catch (e: any) {
-            setSyncResult({ success: false, message: e.message });
+            if (!silent) {
+                setSyncResult({ success: false, message: e.message });
+            }
         } finally {
             setSyncing(false);
         }
@@ -901,7 +928,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                 </Box>
                                 <Flex gap="sm">
                                     {quoteStatus?.nunota && !quoteStatus.isConfirmed && (
-                                        <Button size="sm" onClick={handleSyncToERP} disabled={syncing} variant="secondary">
+                                        <Button size="sm" onClick={() => handleSyncToERP()} disabled={syncing} variant="secondary">
                                             {syncing ? "Sincronizando..." : "🔄 Sincronizar com ERP"}
                                         </Button>
                                     )}
