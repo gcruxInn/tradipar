@@ -2015,50 +2015,119 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
       });
     }
 
-    // 2. Confirmar nota no Sankhya via CRUDServiceProvider.saveRecord
+    // 2. Confirmar nota no Sankhya (mudar STATUSNOTA de 'P' para 'L')
     const token = await getAccessToken();
 
-    // Usar CRUDServiceProvider ao invés de DbExplorerSP (que só permite SELECT)
-    console.log(`[CONFIRM-QUOTE] Using CRUDServiceProvider to confirm NUNOTA ${nunota}...`);
+    console.log(`[CONFIRM-QUOTE] Attempting to confirm NUNOTA ${nunota}...`);
 
-    const confirmPayload = {
-      serviceName: "CRUDServiceProvider.saveRecord",
-      requestBody: {
-        dataSet: {
-          rootEntity: "CabecalhoNota",
-          includePresentationFields: "N",
-          dataRow: {
-            localFields: {
-              NUNOTA: nunota,
-              STATUSNOTA: "L"
-            },
-            key: {
-              NUNOTA: nunota
+    let confirmed = false;
+
+    // Strategy 1: Tentar CACSP.confirmarNota (serviço nativo para confirmar notas)
+    try {
+      console.log(`[CONFIRM-QUOTE] Strategy 1: CACSP.confirmarNota...`);
+      const confirmResp1 = await axios.post(
+        `${baseUrl}/gateway/v1/mgecom/service.sbr?serviceName=CACSP.confirmarNota&outputType=json`,
+        {
+          serviceName: "CACSP.confirmarNota",
+          requestBody: {
+            notas: {
+              nota: {
+                NUNOTA: { "$": nunota.toString() }
+              }
             }
           }
-        }
+        },
+        { headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, timeout: 30000 }
+      );
+      console.log(`[CONFIRM-QUOTE] CACSP.confirmarNota response:`, JSON.stringify(confirmResp1.data));
+
+      if (confirmResp1.data.status === "1") {
+        confirmed = true;
+        console.log(`[CONFIRM-QUOTE] NUNOTA ${nunota} confirmed via CACSP.confirmarNota`);
       }
-    };
-
-    const confirmResp = await axios.post(
-      `${baseUrl}/gateway/v1/mge/service.sbr?serviceName=CRUDServiceProvider.saveRecord&outputType=json`,
-      confirmPayload,
-      {
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    console.log(`[CONFIRM-QUOTE] CRUD response:`, JSON.stringify(confirmResp.data));
-
-    // Check for success
-    if (confirmResp.data.status !== "1") {
-      throw new Error(`CRUD saveRecord failed: ${confirmResp.data.statusMessage || JSON.stringify(confirmResp.data)}`);
+    } catch (e1) {
+      console.warn(`[CONFIRM-QUOTE] CACSP.confirmarNota failed: ${e1.message}`);
     }
 
-    console.log(`[CONFIRM-QUOTE] NUNOTA ${nunota} confirmed successfully via CRUDServiceProvider`);
+    // Strategy 2: CRUDServiceProvider via mgecom com formato $ nos campos
+    if (!confirmed) {
+      try {
+        console.log(`[CONFIRM-QUOTE] Strategy 2: CRUDServiceProvider.saveRecord via mgecom...`);
+        const confirmResp2 = await axios.post(
+          `${baseUrl}/gateway/v1/mgecom/service.sbr?serviceName=CRUDServiceProvider.saveRecord&outputType=json`,
+          {
+            serviceName: "CRUDServiceProvider.saveRecord",
+            requestBody: {
+              dataSet: {
+                rootEntity: "CabecalhoNota",
+                includePresentationFields: "N",
+                dataRow: {
+                  localFields: {
+                    NUNOTA: { "$": nunota.toString() },
+                    STATUSNOTA: { "$": "L" }
+                  },
+                  key: {
+                    NUNOTA: { "$": nunota.toString() }
+                  }
+                }
+              }
+            }
+          },
+          { headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, timeout: 30000 }
+        );
+        console.log(`[CONFIRM-QUOTE] CRUD mgecom response:`, JSON.stringify(confirmResp2.data));
+
+        if (confirmResp2.data.status === "1") {
+          confirmed = true;
+          console.log(`[CONFIRM-QUOTE] NUNOTA ${nunota} confirmed via CRUDServiceProvider (mgecom)`);
+        }
+      } catch (e2) {
+        console.warn(`[CONFIRM-QUOTE] CRUDServiceProvider mgecom failed: ${e2.message}`);
+      }
+    }
+
+    // Strategy 3: CRUDServiceProvider via mge com formato $ nos campos
+    if (!confirmed) {
+      try {
+        console.log(`[CONFIRM-QUOTE] Strategy 3: CRUDServiceProvider.saveRecord via mge...`);
+        const confirmResp3 = await axios.post(
+          `${baseUrl}/gateway/v1/mge/service.sbr?serviceName=CRUDServiceProvider.saveRecord&outputType=json`,
+          {
+            serviceName: "CRUDServiceProvider.saveRecord",
+            requestBody: {
+              dataSet: {
+                rootEntity: "CabecalhoNota",
+                includePresentationFields: "N",
+                dataRow: {
+                  localFields: {
+                    NUNOTA: { "$": nunota.toString() },
+                    STATUSNOTA: { "$": "L" }
+                  },
+                  key: {
+                    NUNOTA: { "$": nunota.toString() }
+                  }
+                }
+              }
+            }
+          },
+          { headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, timeout: 30000 }
+        );
+        console.log(`[CONFIRM-QUOTE] CRUD mge response:`, JSON.stringify(confirmResp3.data));
+
+        if (confirmResp3.data.status === "1") {
+          confirmed = true;
+          console.log(`[CONFIRM-QUOTE] NUNOTA ${nunota} confirmed via CRUDServiceProvider (mge)`);
+        }
+      } catch (e3) {
+        console.warn(`[CONFIRM-QUOTE] CRUDServiceProvider mge failed: ${e3.message}`);
+      }
+    }
+
+    if (!confirmed) {
+      throw new Error("Todas as estratégias de confirmação falharam. Verifique os logs do servidor para detalhes.");
+    }
+
+    console.log(`[CONFIRM-QUOTE] NUNOTA ${nunota} confirmed successfully!`);
 
     // 2.2. Atualizar Deal no HubSpot com a confirmaÃ§Ã£o (sankhya_nunota)
     console.log(`[CONFIRM-QUOTE] Marcando Deal ${dealId} como confirmado no HubSpot...`);
