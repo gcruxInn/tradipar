@@ -1893,7 +1893,7 @@ app.get("/hubspot/quote-status/:dealId", async (req, res) => {
           isConfirmed: false,
           profitability: null,
           buttonAction: "CREATE_QUOTE",
-          buttonLabel: "Criar OrÃ§amento"
+          buttonLabel: "Criar Orçamento"
         }
       });
     }
@@ -1931,21 +1931,24 @@ app.get("/hubspot/quote-status/:dealId", async (req, res) => {
       profitabilityError = e.message;
     }
 
-    // 4. Determinar aÃ§Ã£o do botÃ£o
+    // 4. Determinar ação do botão
     let buttonAction, buttonLabel;
 
     if (!isConfirmed && isRentavel) {
       buttonAction = "CONFIRM_QUOTE";
-      buttonLabel = "Confirmar OrÃ§amento";
-    } else if (!isConfirmed && !isRentavel) {
+      buttonLabel = "Confirmar Orçamento";
+    } else if (statusNota === "A") { // "A" for Aguardando Aprovação
       buttonAction = "NEEDS_APPROVAL";
-      buttonLabel = "Aguardando AprovaÃ§Ã£o";
-    } else if (isConfirmed) {
+      buttonLabel = "Aguardando Aprovação";
+    } else if (statusNota === "L") { // "L" for Liberado (ready to generate PDF)
       buttonAction = "GENERATE_PDF";
       buttonLabel = "Gerar PDF";
-    } else {
+    } else if (statusNota === "P") { // "P" for Pendente (default, view quote)
       buttonAction = "VIEW_QUOTE";
-      buttonLabel = "Ver OrÃ§amento";
+      buttonLabel = "Ver Orçamento";
+    } else { // Fallback for other statuses or if isConfirmed is true but not "L"
+      buttonAction = "VIEW_QUOTE";
+      buttonLabel = "Ver Orçamento";
     }
 
     res.json({
@@ -2090,7 +2093,7 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
       confirmed: true,
       profitability,
       pdfResult,
-      message: `OrÃ§amento ${confirmedNunota} confirmado com sucesso!${pdfResult?.success ? ' PDF anexado ao Deal.' : ''}`
+      message: `Orçamento ${confirmedNunota} confirmado com sucesso!${pdfResult?.success ? ' PDF anexado ao Deal.' : ''}`
     });
 
   } catch (error) {
