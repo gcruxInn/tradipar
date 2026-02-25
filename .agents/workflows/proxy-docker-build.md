@@ -7,16 +7,25 @@ description: Deploy ou atualização de módulos de orquestração via Node Prox
 Ao editar o middleware Node.js, não jogue diretamente às escuras. O processo de publicação deve ser auditado.
 
 // turbo
-1. Verifique a sintaxe fatal subjacente do index:
+1. Verifique a sintaxe fatal subjacente usando o roteamento rígido do WSL (conforme CLAUDE.md):
 ```bash
-cd aws-server-alef && node -c index.js
+# Validação WSL nativa garantindo compatibilidade via caminho absoluto
+cd /home/rochagabriel/dev/tradipar/aws-server-alef && node --check index.js
 ```
 
-2. Requisite ao usuário as chaves ou autorizações pre-deploy via SSH para o ambiente online do servidor dedicado `~/htdocs/api.gcrux.com/aws-server-alef/`.
-
-3. Prepare os comandos de Rsync ou `scp` instruindo para cópia somente dos arquivos necessários.
-
-4. (Servidor Alef) Suba o cluster do Proxy forçando build.
+2. Sincronize o arquivo principal (.js) diretamente na pasta do servidor remoto:
+*Importante:* Para o acesso SSH/SCP (`gcrux-api@137.131.243.179`), utilize a senha presente em `GCRUX_API_SSH` no arquivo root `.env` local.
 ```bash
-sudo docker compose up -d --build
+# Sincroniza o core do servidor AWS
+scp /home/rochagabriel/dev/tradipar/aws-server-alef/index.js gcrux-api@137.131.243.179:~/htdocs/api.gcrux.com/aws-server-alef/
+```
+
+3. Suba ou reinicie o cluster do Proxy forçando o rebuild do container:
+```bash
+ssh gcrux-api@137.131.243.179 "cd ~/htdocs/api.gcrux.com/aws-server-alef && docker compose up -d --build --force-recreate"
+```
+
+4. Acompanhe os logs da máquina remota para se certificar de que os endpoints REST estabilizaram e estão online:
+```bash
+ssh gcrux-api@137.131.243.179 "docker logs -f api-precos-sankhya"
 ```
