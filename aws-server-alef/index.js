@@ -2041,30 +2041,39 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
 
     console.log(`[CONFIRM-QUOTE] NUNOTA ${nunota} confirmed successfully!`);
 
-    // 2.2. Atualizar Deal no HubSpot com a confirmação (sankhya_nunota)
+    // Extrair o NUNOTA confirmado da resposta (pode ser novo, se foi faturamento)
+    let confirmedNunota = nunota;
+    const pkNunota = confirmResp.data?.responseBody?.pk?.NUNOTA;
+    if (pkNunota) {
+      confirmedNunota = (typeof pkNunota === 'object' && pkNunota.$) ? pkNunota.$ : pkNunota;
+    }
+    console.log(`[CONFIRM-QUOTE] NUNOTA confirmado pelo Sankhya: ${confirmedNunota} (original: ${nunota})`);
+
+    // 2.2. Atualizar Deal no HubSpot com o NUNOTA confirmado
     const hsToken = process.env.HUBSPOT_ACCESS_TOKEN;
-    console.log(`[CONFIRM-QUOTE] Marcando Deal ${dealId} como confirmado no HubSpot...`);
+    console.log(`[CONFIRM-QUOTE] Salvando sankhya_nunota=${confirmedNunota} no Deal ${dealId}...`);
     try {
       await axios.patch(
         `https://api.hubapi.com/crm/v3/objects/deals/${dealId}`,
-        { properties: { sankhya_nunota: nunota.toString() } },
+        { properties: { sankhya_nunota: confirmedNunota.toString() } },
         { headers: { Authorization: `Bearer ${hsToken}` } }
       );
+      console.log(`[CONFIRM-QUOTE] sankhya_nunota atualizado com sucesso no HubSpot!`);
     } catch (hsError) {
       console.warn(`[CONFIRM-QUOTE] Falha ao preencher sankhya_nunota: ${hsError.message}`);
     }
 
-    // 3. Gerar PDF automaticamente
+    // 3. Gerar PDF automaticamente (usar o NUNOTA confirmado)
     let pdfResult = null;
     try {
-      console.log(`[CONFIRM-QUOTE] Generating PDF for NUNOTA ${nunota}...`);
-      const pdfData = await generateSankhyaPDF(nunota);
+      console.log(`[CONFIRM-QUOTE] Generating PDF for NUNOTA ${confirmedNunota}...`);
+      const pdfData = await generateSankhyaPDF(confirmedNunota);
 
       console.log(`[CONFIRM-QUOTE] Uploading PDF to HubSpot...`);
       const { fileId, url } = await uploadPDFToHubSpot(pdfData.fileName, pdfData.base64);
 
       console.log(`[CONFIRM-QUOTE] Attaching PDF to Deal ${dealId}...`);
-      await createNoteWithPDFAttachment(dealId, fileId, nunota);
+      await createNoteWithPDFAttachment(dealId, fileId, confirmedNunota);
 
       pdfResult = { success: true, fileId, url };
       console.log(`[CONFIRM-QUOTE] âœ… PDF attached successfully!`);
@@ -2075,12 +2084,13 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
 
     res.json({
       success: true,
-      nunota,
+      nunota: confirmedNunota,
+      originalNunota: nunota,
       dealId,
       confirmed: true,
       profitability,
       pdfResult,
-      message: `OrÃ§amento ${nunota} confirmado com sucesso!${pdfResult?.success ? ' PDF anexado ao Deal.' : ''}`
+      message: `OrÃ§amento ${confirmedNunota} confirmado com sucesso!${pdfResult?.success ? ' PDF anexado ao Deal.' : ''}`
     });
 
   } catch (error) {
