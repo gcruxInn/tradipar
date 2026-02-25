@@ -2678,7 +2678,7 @@ app.post("/hubspot/duplicate-line-item", async (req, res) => {
     console.log(`[DUPLICATE-ITEM] Duplicando item ${lineItemId} no Deal ${dealId}...`);
 
     // 1. Buscar propriedades do item original
-    const getResp = await axios.get(`https://api.hubapi.com/crm/v3/objects/line_items/${lineItemId}?properties=name,quantity,price,sankhya_codprod,codprod,hs_product_id,hs_sku,cod_parceiro`, {
+    const getResp = await axios.get(`https://api.hubapi.com/crm/v3/objects/line_items/${lineItemId}?properties=name,quantity,price,sankhya_codprod,codprod,hs_product_id,hs_sku,parceiro`, {
       headers: { Authorization: `Bearer ${hubspotToken}` }
     });
     const props = getResp.data.properties;
@@ -2693,7 +2693,7 @@ app.post("/hubspot/duplicate-line-item", async (req, res) => {
         sankhya_codprod: props.sankhya_codprod || props.codprod || props.hs_sku,
         codprod: props.sankhya_codprod || props.codprod || props.hs_sku,
         hs_sku: props.hs_sku || props.sankhya_codprod || props.codprod,
-        cod_parceiro: props.cod_parceiro // Copy CodParceiro explicitly
+        parceiro: props.parceiro // Copy CodParceiro explicitly
       }
     }, { headers: { Authorization: `Bearer ${hubspotToken}` } });
 
@@ -2799,7 +2799,195 @@ app.post("/hubspot/line-item/update", async (req, res) => {
   }
 });
 
+// ============================================================
+// 🔄 SYNC QUOTE ITEMS: HubSpot Deal Items -> Sankhya Orçamento
+// ============================================================
+app.post("/hubspot/sync-quote-items", async (req, res) => {
+  try {
+    const { dealId, nunota } = req.body;
+    if (!dealId || !nunota) return res.status(400).json({ success: false, error: "Missing dealId or nunota" });
+
+    const hubspotToken = process.env.HUBSPOT_ACCESS_TOKEN;
+    const token = await getAccessToken();
+
+    // 1. Get HubSpot Items
+    console.log(`[SYNC] Fetching items for Deal ${dealId} to sync to NUNOTA ${nunota}...`);
+    const ctx = await getDealSankhyaContext(dealId, hubspotToken);
+
+    // 2. Fetch existing items in Sankhya (Target State)
+    console.log(`[SYNC] Querying existing items for NUNOTA ${nunota}...`);
+    const sql = `SELECT SEQUENCIA, CODPROD, QTDNEG, VLRUNIT, CONTROLE, CODVOL FROM TGFITE WHERE NUNOTA = ${nunota}`;
+    const queryResp = await postGatewayWithRetry({ requestBody: { sql } });
+    const rows = queryResp.data?.responseBody?.rows || [];
+
+    // Map existing items by CODPROD for easy lookup
+    // existingItems: { [codProd_controle]: { sequencia, codProd, qtd, price, controle, codVol } }
+    const existingItems = {};
+    rows.forEach(r => {
+      const dbCodProd = r[1];
+      const dbControle = r[4] || "";
+      const key = `${dbCodProd}_${dbControle}`;
+      existingItems[key] = {
+        sequencia: r[0],
+        codProd: dbCodProd,
+        qtd: parseFloat(r[2]),
+        price: parseFloat(r[3]),
+        controle: dbControle,
+        codVol: r[5] || "UN"
+      };
+    });
+
+    const processedKeys = new Set();
+    const errors = [];
+
+    // 3. Process HubSpot Items (Source Truth) -> Insert or Update
+    console.log(`[SYNC] Processing ${ctx.items.length} items from HubSpot...`);
+
+    for (const item of ctx.items) {
+      const codProd = item.codProd;
+      const hsControle = item.sankhyaControle || "";
+      const key = `${codProd}_${hsControle}`;
+      processedKeys.add(key);
+
+      const existing = existingItems[key];
+      let action = "NONE";
+
+      // Determine Action
+      if (!existing) {
+        action = "CREATE";
+      } else {
+        // Check for differences (tolerance for float precision)
+        const qtdDiff = Math.abs(existing.qtd - item.quantity) > 0.001;
+        const priceDiff = Math.abs(existing.price - (item.currentPrice || 0)) > 0.01;
+
+        if (qtdDiff || priceDiff) {
+          action = "UPDATE";
+        }
+      }
+
+      if (action === "NONE") {
+        console.log(`[SYNC SKIP] Item ${key} is up to date.`);
+        continue;
+      }
+
+      console.log(`[SYNC ACTION: ${action}] Item ${key} (Qty: ${item.quantity}, Price: ${item.currentPrice})`);
+
+      try {
+        let codVol = existing?.codVol || 'UN';
+        let codLocalOrig = 0; // Default fallback, though we want to avoid 0 if possible
+
+        try {
+          if (!existing) {
+            const volSql = `SELECT CODVOL FROM TGFPRO WHERE CODPROD = ${codProd}`;
+            const volResp = await postGatewayWithRetry({ requestBody: { sql: volSql } });
+            codVol = volResp.data?.responseBody?.rows?.[0]?.[0] || 'UN';
+          }
+
+          // Fetch valid CODLOCAL from stock (TGFEST) to avoid '<SEM LOCAL>' error
+          const controleSafe = hsControle.trim();
+          const localSql = `SELECT MAX(CODLOCAL) FROM TGFEST WHERE CODPROD = ${codProd} AND CODEMP = ${ctx.codEmp} ${controleSafe ? `AND CONTROLE = '${controleSafe}'` : "AND (CONTROLE IS NULL OR CONTROLE = '' OR CONTROLE = ' ')"} AND ESTOQUE > 0`;
+          const localResp = await postGatewayWithRetry({ requestBody: { sql: localSql } });
+          const foundLocal = localResp.data?.responseBody?.rows?.[0]?.[0];
+
+          if (foundLocal !== undefined && foundLocal !== null) {
+            codLocalOrig = parseInt(foundLocal, 10);
+            console.log(`[SYNC LOCAL] Encontrado CODLOCAL ${codLocalOrig} para CODPROD ${codProd}`);
+          } else {
+            // If no stock found, try TGFPRO defaults
+            const prodSql = `SELECT CODLOCALPADRAO FROM TGFPRO WHERE CODPROD = ${codProd}`;
+            const prodResp = await postGatewayWithRetry({ requestBody: { sql: prodSql } });
+            const prodLocal = prodResp.data?.responseBody?.rows?.[0]?.[0];
+            if (prodLocal !== undefined && prodLocal !== null) {
+              codLocalOrig = parseInt(prodLocal, 10);
+              console.log(`[SYNC LOCAL] Usando CODLOCALPADRAO ${codLocalOrig} para CODPROD ${codProd}`);
+            } else {
+              console.warn(`[SYNC WARNING] Não foi possível determinar um CODLOCAL válido para CODPROD ${codProd}. Usando 10000 como fallback.`);
+              codLocalOrig = 10000; // Common fallback local in Sankhya, avoiding 0
+            }
+          }
+        } catch (e) {
+          console.warn(`Error fetching vol/local for ${codProd}`, e);
+          codLocalOrig = 10000; // Safe fallback
+        }
+
+        const insertPayload = {
+          serviceName: "CACSP.incluirAlterarItemNota",
+          requestBody: {
+            nota: {
+              NUNOTA: nunota.toString(), // Required as attribute on nota
+              itens: {
+                item: {
+                  NUNOTA: { "$": nunota },
+                  SEQUENCIA: action === "UPDATE" ? { "$": existing.sequencia } : { "$": "" },
+                  CODPROD: { "$": codProd },
+                  QTDNEG: { "$": item.quantity },
+                  VLRUNIT: { "$": item.currentPrice || 0 },
+                  VLRTOT: { "$": (item.quantity * (item.currentPrice || 0)) },
+                  CODVOL: { "$": codVol },
+                  CODLOCALORIG: { "$": codLocalOrig },
+                  PERCDESC: { "$": 0 },
+                  VLRDESC: { "$": 0 },
+                  CONTROLE: { "$": hsControle }
+                }
+              }
+            }
+          }
+        };
+
+        console.log(`[SYNC PAYLOAD] ${JSON.stringify(insertPayload)}`);
+
+        const resp = await axios.post(`${baseUrl}/gateway/v1/mgecom/service.sbr?serviceName=CACSP.incluirAlterarItemNota&outputType=json`,
+          insertPayload,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+
+        if (resp.data.status !== "1") {
+          throw new Error(resp.data.statusMessage || "Erro desconhecido no Sankhya");
+        }
+        console.log(`[SYNC SUCCESS] Item ${key} processed successfully.`);
+
+      } catch (err) {
+        console.error(`[SYNC ITEM ERROR] Failed to ${action} item ${key}: ${err.message}`);
+        errors.push(`Item ${key}: ${err.message}`);
+      }
+    }
+
+    // 4. Delete items present in Sankhya but not in HubSpot
+    for (const key of Object.keys(existingItems)) {
+      if (!processedKeys.has(key)) {
+        const existing = existingItems[key];
+        console.log(`[SYNC ACTION: DELETE] Item ${key} (Seq: ${existing.sequencia}) no longer in HubSpot.`);
+        try {
+          await axios.post(`${baseUrl}/gateway/v1/mgecom/service.sbr?serviceName=CACSP.excluirItemNota&outputType=json`, {
+            serviceName: "CACSP.excluirItemNota",
+            requestBody: {
+              item: { // Formato correto conforme a documentacao fornecida
+                NUNOTA: { "$": nunota },
+                SEQUENCIA: { "$": existing.sequencia }
+              }
+            }
+          }, { headers: { Authorization: `Bearer ${token}` } });
+          console.log(`[SYNC SUCCESS] Item ${key} deleted.`);
+        } catch (delErr) {
+          console.error(`[SYNC DELETE ERROR] Failed to delete item ${key}: ${delErr.message}`);
+          errors.push(`Delete ${key}: ${delErr.message}`);
+        }
+      }
+    }
+
+    if (errors.length > 0) {
+      return res.json({ success: false, message: "Alguns itens falharam na sincronização.", errors });
+    }
+
+    res.json({ success: true, nunota, itemsCount: ctx.items.length, message: "Sincronização concluída com sucesso!" });
+
+  } catch (error) {
+    console.error(`[SYNC ERROR] ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.listen(Number(process.env.PORT || 3000), () => {
-  console.log(`ðŸš€ API: http://localhost:${process.env.PORT || 3000}`);
-  console.log("--- SYSTEM READY (v1.3 - Product Sync Support) ---");
+  console.log(`🚀 API: http://localhost:${process.env.PORT || 3000}`);
+  console.log("--- SYSTEM READY (v1.4 - Sync Support) ---");
 });

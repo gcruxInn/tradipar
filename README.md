@@ -1,8 +1,12 @@
-# Tradipar HubSpot Integration Ecosystem
+# Tradipar HubSpot Integration Ecosystem (AI-Driven)
 
-Ecossistema de integração entre Sankhya ERP e HubSpot CRM, focado em automação de tabelas de preços, estoque e sincronização de dados mestres.
+Ecossistema de integração entre Sankhya ERP e HubSpot CRM, focado em automação de tabelas de preços, estoque e sincronização de dados mestres. 
+**Este repositório é ativamente gerido por Agentes Especializados de IA (Antigravity).**
 
 ## Componentes
+
+### 🤖 0. [Inteligência Artificial (Agentes)](file:///./.agents/)
+Framework de multi-agentes autônomos que orquestram validações, builds e refatorações no ecossistema (UI, Proxy Node.js e Java Core). Responsável pela "Self-Healing Memory" e "Safe-Publish Protocols".
 
 ### 1. [Java Cloud Integration](file:///./src/)
 Núcleo da integração "Set and Forget". Responsável pelo sync pesado de dados.
@@ -59,6 +63,9 @@ hs project upload
 
 ```
 tradipar/
+├── .agents/                       # 🤖 Skills e Workflows dos Agentes Antigravity
+│   ├── skills/                    # SKILL.md compartimentadas (UI, Proxy, Core)
+│   └── workflows/                 # Pipelines de deploy autônomos (Peace Protocol)
 ├── aws-server-alef/               # Servidor Proxy Node.js (Docker)
 ├── sankhya-integration-innleaders/ # Projeto HubSpot UI Extension (React/TypeScript)
 ├── src/                           # Código Fonte Java (Core Sankhya)

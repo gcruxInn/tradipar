@@ -17,6 +17,10 @@ import {
     TableCell,
     TableHead,
     TableHeader,
+    Heading,
+    Statistics,
+    StatisticsItem,
+    StatisticsTrend,
     // Accordion, // Accordion removed in favor of Tabs
     Select,
     Modal,
@@ -55,10 +59,26 @@ interface QuoteStatus {
     isRentavel: boolean;
     buttonAction: string;
     buttonLabel: string;
-    profitability?: any;
+    profitability?: Profitability;
     profitabilityError?: string;
     statusNota?: string;
-    numnota?: number | null;
+}
+
+interface Profitability {
+    nunota: number;
+    faturamento: number;
+    custoMercadoriaVendida: number;
+    gastoVariavel: number;
+    gastoFixo: number;
+    lucro: number;
+    margemContribuicao: number;
+    percentLucro: number;
+    percentMC: number;
+    percentCMV: number;
+    percentGV: number;
+    percentGF: number;
+    isRentavel: boolean;
+    qtdItens: number;
 }
 
 interface PrecosResponse {
@@ -67,6 +87,7 @@ interface PrecosResponse {
     currentStage: string;
     stageLabel?: string;
     codEmp: string | number;
+    codParceiro?: string | number;
 }
 
 hubspot.extend<'crm.record.tab'>(({ context, actions }) => (
@@ -118,12 +139,16 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     const [quoteError, setQuoteError] = useState<string | null>(null);
     const [quoteSuccess, setQuoteSuccess] = useState<string | null>(null);
 
+    // Sync State
+    const [syncing, setSyncing] = useState(false);
+    const [syncResult, setSyncResult] = useState<{ message?: string, success: boolean } | null>(null);
+
     // Batch Control State
     const [availableControls, setAvailableControls] = useState<Record<string, { controle: string, saldo: number }[]>>({});
 
     // Navigation State (Hybrid UI)
     const [currentStep, setCurrentStep] = useState(0); // 0: Handshake, 1: Items, 2: Checkout
-    const [itemsTab, setItemsTab] = useState("list"); // "list" | "add" | "details"
+    const [itemsTab, setItemsTab] = useState("list"); // "list" | "add"
 
     const fetchControlsForProduct = async (codProd: string, overrideCodEmp?: string | number) => {
         const targetCodEmp = overrideCodEmp !== undefined ? overrideCodEmp : (data?.codEmp || "");
@@ -199,6 +224,11 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
     };
 
+    const formatPercent = (value: number | undefined): string => {
+        if (value === undefined || value === null) return "---";
+        return `${value.toFixed(2)}%`;
+    };
+
     // Initial Load
     useEffect(() => {
         const loadInitialData = async () => {
@@ -208,9 +238,9 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             // Explicitly fetch company ID to ensure context for stock tags
             try {
                 if (actions && actions.fetchCrmObjectProperties) {
-                    const props = await actions.fetchCrmObjectProperties(['codemp_sankhya']);
-                    if (props && props.codemp_sankhya) {
-                        setData(prev => prev ? { ...prev, codEmp: props.codemp_sankhya } : { items: [], currentAmount: "0", currentStage: "", codEmp: props.codemp_sankhya });
+                    const props = await actions.fetchCrmObjectProperties(['codemp_sankhya', 'parceiro']);
+                    if (props && (props.codemp_sankhya || props.parceiro)) {
+                        setData(prev => prev ? { ...prev, codEmp: props.codemp_sankhya, codParceiro: props.parceiro } : { items: [], currentAmount: "0", currentStage: "", codEmp: props.codemp_sankhya, codParceiro: props.parceiro });
                     }
                 }
             } catch (e) {
@@ -251,7 +281,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                     body: { objectId: context.crm.objectId }
                 }),
                 actions && actions.fetchCrmObjectProperties
-                    ? actions.fetchCrmObjectProperties(['codemp_sankhya'])
+                    ? actions.fetchCrmObjectProperties(['codemp_sankhya', 'parceiro'])
                     : Promise.resolve({})
             ]);
 
@@ -272,7 +302,8 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 }
                 lastDataHash.current = currentHash;
 
-                setData(result);
+                setData({ ...result, codParceiro: props?.parceiro || (data && data.codParceiro) });
+                setMissingData(null);
                 if (result.currentAmount) setAmount(Number(result.currentAmount));
 
                 // Re-calc price types logic
@@ -300,6 +331,10 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 setSelectedPrices(prev => ({ ...prev, ...initialPrices }));
             } else if (result && result.status === "MISSING_DATA") {
                 setMissingData(result.details);
+                // Even on missing data from backend, update local context properties if available
+                if (props?.parceiro || props?.codemp_sankhya) {
+                    setData(prev => prev ? { ...prev, codEmp: props.codemp_sankhya || prev.codEmp, codParceiro: props.parceiro || prev.codParceiro } : { items: [], currentAmount: "0", currentStage: "", codEmp: props?.codemp_sankhya, codParceiro: props?.parceiro });
+                }
             } else {
                 setError(result.error || "Erro ao carregar dados.");
             }
@@ -335,6 +370,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             if (response.ok) {
                 setSaveSuccess(true);
                 onRefreshProperties(); // Sync HubSpot UI
+                fetchQuoteStatus(); // Update Profitability
                 setTimeout(() => setSaveSuccess(false), 3000);
             }
         } catch (err: any) {
@@ -691,25 +727,29 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
 
                         <Flex gap="sm" wrap="wrap">
-                            <Tag variant={quoteStatus?.numnota ? "success" : "warning"}>
-                                Status: {quoteStatus?.numnota
-                                    ? `Confirmado (Nota ${quoteStatus.numnota})`
+                            <Tag variant={quoteStatus?.nunota ? "success" : "warning"}>
+                                Status: {quoteStatus?.nunota
+                                    ? `Confirmado (Nota ${quoteStatus.nunota})`
                                     : (hasBudget ? "Em Negociação" : "Iniciando Negociação")}
                             </Tag>
                         </Flex>
 
 
-                        {missingData?.codParc ? (
+                        {!data?.codParceiro ? (
                             <Alert title="Parceiro Ausente" variant="warning">
-                                Este negócio não tem um "Parceiro" vinculado. Adicione a empresa no HubSpot.
+                                Este negócio não tem um "Parceiro" / Empresa vinculado ou a propriedade "parceiro" não está preenchida. Adicione uma empresa associada a este negócio ou preencha a propriedade "parceiro" com o código do parceiro.
                             </Alert>
-                        ) : hasBudget ? (
-                            <Alert title="Conexão Ativa" variant="success">
-                                Nro. Único Vinculado: <Text inline={true} format={{ fontWeight: "bold" }}>{quoteStatus?.nunota}</Text>
-                            </Alert>
-                        ) : (
+                        ) : !hasBudget ? (
                             <Alert title="Conexão Pendente" variant="error">
                                 Este negócio ainda não possui um orçamento iniciado no Sankhya.
+                            </Alert>
+                        ) : (!data?.items || data.items.length === 0) ? (
+                            <Alert title="Orçamento Vazio" variant="info">
+                                Lista de itens vazia ou não sincronizada. Adicione itens para calcular.
+                            </Alert>
+                        ) : (
+                            <Alert title="Conexão Ativa" variant="success">
+                                Nro. Único Vinculado: <Text inline={true} format={{ fontWeight: "bold" }}>{quoteStatus?.nunota}</Text>
                             </Alert>
                         )}
 
@@ -721,7 +761,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                     </Flex>
                 </Tile>
 
-                {hasBudget && (
+                {hasBudget && !!data?.codParceiro && data?.items && data.items.length > 0 && (
                     <Button onClick={() => setCurrentStep(1)} variant="primary">
                         Avançar para Produtos &rarr;
                     </Button>
@@ -730,20 +770,59 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         );
     };
 
+    const handleSyncToERP = async () => {
+        if (!quoteStatus?.nunota) return;
+
+        setSyncing(true);
+        setSyncResult(null);
+
+        try {
+            const resp = await hubspot.fetch("https://api.gcrux.com/hubspot/sync-quote-items", {
+                method: "POST",
+                body: { dealId: context.crm.objectId, nunota: quoteStatus.nunota }
+            });
+
+            const res = await resp.json();
+
+            if (res.success) {
+                setSyncResult({ success: true, message: "Sincronizado com sucesso!" });
+                fetchPrices();
+                setTimeout(() => setSyncResult(null), 3000);
+            } else {
+                setSyncResult({ success: false, message: res.error || "Erro na sincronização." });
+            }
+        } catch (e: any) {
+            setSyncResult({ success: false, message: e.message });
+        } finally {
+            setSyncing(false);
+        }
+    };
+
     // --- STEP 2: GESTÃO DE PRODUTOS (Items Hub) ---
     const renderStep2 = () => {
         return (
-            <Flex direction="column" gap="md">
-                <Tabs selected={itemsTab} onSelectedChange={setItemsTab}>
+            <Flex direction="column" gap="large">
+                <Tabs variant="enclosed" selected={itemsTab} onSelectedChange={setItemsTab}>
                     <Tab tabId="list" title="📝 Carrinho">
                         <Box>
                             <Flex direction="row" gap="sm" justify="between" align="center" wrap="wrap">
                                 <Box>
                                     <Text format={{ fontWeight: "bold" }}>Itens no Carrinho: {data?.items?.length || 0}</Text>
                                 </Box>
-                                <Button size="sm" onClick={() => handleApplyAllItemsPV("pv1")}>Aplicar PV1 em Tudo</Button>
+                                <Flex gap="sm">
+                                    {quoteStatus?.nunota && !quoteStatus.isConfirmed && (
+                                        <Button size="sm" onClick={handleSyncToERP} disabled={syncing} variant="secondary">
+                                            {syncing ? "Sincronizando..." : "🔄 Atualizar no ERP"}
+                                        </Button>
+                                    )}
+                                    <Button size="sm" onClick={() => handleApplyAllItemsPV("pv1")}>Aplicar PV1 em Tudo</Button>
+                                </Flex>
                             </Flex>
-                            <Divider distance="sm" />
+                            {syncResult && (
+                                <Alert title={syncResult.success ? "Sucesso" : "Erro"} variant={syncResult.success ? "success" : "danger"}>
+                                    {syncResult.message}
+                                </Alert>
+                            )}
                             <Table>
                                 <TableHead>
                                     <TableRow>
@@ -786,7 +865,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                                         {item.name}
                                                         <Text inline={true} variant="microcopy"> Cód: {item.codProd}</Text>
                                                     </Text>
-                                                    <Text variant="microcopy">Total: {item.stock + (item.stockOther || 0)}</Text>
+                                                    <Text variant="microcopy">Disp: {item.stock + (item.stockOther || 0)}</Text>
                                                     <Flex direction="row" gap="xs" wrap="wrap">
                                                         {item.stock < item.quantity && (
                                                             <Tag variant="warning">⚠️ {item.stock}</Tag>
@@ -878,6 +957,68 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                     ))}
                                 </TableBody>
                             </Table>
+                            {quoteStatus?.profitability ? (
+                                <Box>
+                                    <Divider distance="large" />
+                                    <Flex direction="column">
+                                        <Flex direction="row" justify="center" gap="small">
+                                            <Heading>Análise de Rentabilidade</Heading>
+                                            {quoteStatus.profitability.isRentavel ? (
+                                                <Tag variant="success">✅ Rentável</Tag>
+                                            ) : (
+                                                <Tag variant="error">❌ Prejuízo</Tag>
+                                            )}
+                                        </Flex>
+                                    </Flex>
+                                    <Divider distance="lg" />
+                                    <Statistics>
+                                        <StatisticsItem label="Faturamento" number={formatCurrency(quoteStatus.profitability.faturamento)}>
+                                        </StatisticsItem>
+                                        <StatisticsItem label="Margem Contribuição" number={formatCurrency(quoteStatus.profitability.margemContribuicao)}>
+                                            <StatisticsTrend
+                                                direction={quoteStatus.profitability.percentMC >= 0 ? "increase" : "decrease"}
+                                                value={formatPercent(quoteStatus.profitability.percentMC)}
+                                            />
+                                        </StatisticsItem>
+                                        <StatisticsItem label="Lucro Líquido" number={formatCurrency(quoteStatus.profitability.lucro)}>
+                                            <StatisticsTrend
+                                                direction={quoteStatus.profitability.isRentavel ? "increase" : "decrease"}
+                                                value={formatPercent(quoteStatus.profitability.percentLucro)}
+                                            />
+                                        </StatisticsItem>
+                                    </Statistics>
+                                    <Table>
+                                        <TableHead>
+                                            <TableRow>
+                                                <TableHeader>Custo</TableHeader>
+                                                <TableHeader align="right">Valor (R$)</TableHeader>
+                                                <TableHeader align="right">%</TableHeader>
+                                            </TableRow>
+                                        </TableHead>
+                                        <TableBody>
+                                            <TableRow>
+                                                <TableCell>CMV (Custo Mercadoria)</TableCell>
+                                                <TableCell align="right">{formatCurrency(quoteStatus.profitability.custoMercadoriaVendida)}</TableCell>
+                                                <TableCell align="right">{formatPercent(quoteStatus.profitability.percentCMV)}</TableCell>
+                                            </TableRow>
+                                            <TableRow>
+                                                <TableCell>Gasto Variável</TableCell>
+                                                <TableCell align="right">{formatCurrency(quoteStatus.profitability.gastoVariavel)}</TableCell>
+                                                <TableCell align="right">{formatPercent(quoteStatus.profitability.percentGV)}</TableCell>
+                                            </TableRow>
+                                            <TableRow>
+                                                <TableCell>Gasto Fixo</TableCell>
+                                                <TableCell align="right">{formatCurrency(quoteStatus.profitability.gastoFixo)}</TableCell>
+                                                <TableCell align="right">{formatPercent(quoteStatus.profitability.percentGF)}</TableCell>
+                                            </TableRow>
+                                        </TableBody>
+                                    </Table>
+                                </Box>
+                            ) : (
+                                <Alert title="Rentabilidade Indisponível" variant="warning">
+                                    Sincronize o pedido para visualizar a análise financeira.
+                                </Alert>
+                            )}
                         </Box>
                     </Tab>
                     <Tab tabId="add" title="➕ Adicionar Itens">
@@ -885,13 +1026,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                             {renderAddItemContent()}
                         </Box>
                     </Tab>
-                    <Tab tabId="details" title="ℹ️ Detalhes">
-                        <Box>
-                            <Alert title="Informações Detalhadas" variant="info">
-                                Selecione um item na aba "Carrinho" para ver detalhes de estoque multi-empresa aqui. (Em breve)
-                            </Alert>
-                        </Box>
-                    </Tab>
+                    {/* Tab 'details' removed */}
                 </Tabs>
 
                 <Flex gap="sm" justify="between">
@@ -908,13 +1043,17 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             <Flex direction="column" gap="md">
                 <Tile>
                     <Flex direction="column" gap="md" align="center">
-                        <Text format={{ fontWeight: "bold", fontSize: "lg" }}>Resumo do Negócio</Text>
+                        <Heading>Resumo do Negócio</Heading>
                         <Divider />
                         <Flex gap="xl" justify="center">
                             <Flex direction="column" align="center">
                                 <Text variant="microcopy">Total Calculado (Itens)</Text>
-                                <Text format={{ fontSize: "heading-medium", fontWeight: "bold" }}>{formatCurrency(amount || 0)}</Text>
+                                <Heading>{formatCurrency(amount || 0)}</Heading>
                             </Flex>
+                        </Flex>
+                        <Divider />
+                        <Flex gap="md">
+                            {/* Profitability table moved to Step 2 */}
                         </Flex>
                         <Divider />
                         <Flex gap="md">

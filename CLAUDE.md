@@ -33,9 +33,10 @@ Antes de finalizar qualquer task, verifique:
 - **Arquivo Principal Motor:** `index.js`
 
 ## 🛠️ SYSTEM ENVIRONMENT & PATH GUIDELINES (CRITICAL)
-- **🚨 WSL/LINUX ONLY:** Este agente JÁ RODA dentro do WSL (Ubuntu).
-- **Recursion Warning:** PARE de usar o prefixo `wsl` em seus comandos Bash. Use comandos nativos diretamente (ex: use `grep`, não `wsl grep`). Sua instância foi iniciada via `wsl.exe bash`, logo, seu ambiente já é o Linux.
-- **Rule:** Nunca passe caminhos `\\wsl.localhost` para as ferramentas `Read`, `Grep` ou `Ls`. Use caminhos relativos ou absolutos Linux (ex: `/home/...`).
+- **🚨 WSL PATH MAPPING:** Para ferramentas do MCP (ClaudeCode/Grep/Read/Ls/etc), **NUNCA** use caminhos Windows UNC (`\\wsl.localhost\...` ou `//wsl.localhost/...`).
+- **CORRETO:** Use caminhos absolutos Linux nativos: `/home/rochagabriel/dev/tradipar/...`
+- **ERRADO:** `\\wsl.localhost\Ubuntu-22.04\home\rochagabriel\dev\tradipar\...`
+- **Motivo:** O ambiente de execução do MCP espera caminhos locais do Linux dentro do WSL.
 
 ## ⚡ PERFORMANCE & TIMEOUT PREVENTION
 - **Ignore Dependencies:** ALWAYS exclude `node_modules` from searches.
@@ -43,9 +44,10 @@ Antes de finalizar qualquer task, verifique:
 
 ## 🧪 VALIDATION COMMANDS
 - **Backend Check:** `wsl -d Ubuntu-22.04 sh -c "cd /home/rochagabriel/dev/tradipar && node --check aws-server-alef/index.js"`
-- **Nota:** Ignore erros de `UtilTranslatePathList` no console; o check é bem-sucedido se o Node não retornar mensagens de erro de sintaxe.
+- **HubSpot Upload:** Para comandos `hs`, prefira usar via PowerShell no Windows se o binário Linux falhar: `powershell -Command "cd \\\\wsl.localhost\\Ubuntu-22.04\\home\\rochagabriel\\dev\\tradipar\\... ; hs project upload"`
 
-## 🛑 BLOQUEIO DE CAMINHOS HÍBRIDOS (ANTI-RECURSION)
-- **Instrução Absoluta:** Se uma ferramenta (ex: fetch-doc ou search) retornar um caminho começando com "C:/" ou "\\wsl.localhost", você está PROIBIDO de usá-lo diretamente.
-- **Ação:** Converta imediatamente para o equivalente `/home/rochagabriel/dev/tradipar/...` antes de qualquer tentativa de leitura.
-- **Terminal:** Você opera em um shell BASH Linux. Comandos Windows (wsl, powershell.exe) não funcionam aqui. Use `grep`, `cat`, `ls` nativos.
+## 🛑 REGRAS DE EXECUÇÃO MCP (MANDATÓRIO)
+1. **Grep/Read/Ls:** Ao chamar estas ferramentas, converta AUTOMATICAMENTE qualquer caminho `\\wsl.localhost` para `/home/rochagabriel/...`.
+   - *Exemplo Input:* `\\wsl.localhost\Ubuntu-22.04\home\rochagabriel\dev\tradipar\index.js`
+   - *Exemplo Tool Call:* `path: "/home/rochagabriel/dev/tradipar/index.js"`
+2. **Terminal:** Se for rodar comandos via `run_command` que dependem de variáveis de ambiente Windows (como `hs` instalado no Windows), use `powershell`. Se for script nativo (node, npm), use `wsl`.
