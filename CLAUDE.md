@@ -7,7 +7,7 @@
 
 ## 🏗️ ARQUITETURA & PADRÕES (NÃO QUEBRAR)
 1.  **Backend (Node.js)**:
-    -   **UTF-8 Integrity:** NUNCA remova o helper `fixEncoding` em `index.js`. O Sankhya retorna ISO-8859-1 e precisamos converter para UTF-8.
+    -   **UTF-8 Integrity:** NUNCA remova o helper `fixEncoding` em `sankhya.api.ts`. O Sankhya retorna ISO-8859-1 e precisamos converter para UTF-8.
     -   **Vínculo Mestre:** `orcamento_sankhya` é a fonte da verdade definitiva para o vínculo. Se existir, o `nunota` é tratado como secundário.
 
 2.  **Frontend (React/HubSpot)**:
@@ -17,7 +17,7 @@
     -   **Refresh Nativo:** O botão "Aplicar" no Checkout DEVE obrigatoriamente chamar `onRefreshProperties()` para sincronizar o CRM.
 
 3.  **Git & Commits**:
-    -   **Padrão:** Sempre use o sufixo `Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>` (ou Opus conforme configurado) em todos os commits solicitados.
+    -   **Padrão:** Sempre use o sufixo `Co-Authored-By: Claude Sonnet 3.7 <noreply@anthropic.com>` em todos os commits solicitados.
 
 ## 🛡️ PROTOCOLO DE SEGURANÇA (SELF-HEALING)
 Antes de finalizar qualquer task, verifique:
@@ -31,6 +31,7 @@ Antes de finalizar qualquer task, verifique:
 - **Backend API:** `/home/rochagabriel/dev/tradipar/tradipar-core-api`
 - **Arquivo Principal UI:** `src/app/cards/PrecosCard.tsx`
 - **Services Principal:** `src/services/order.service.ts` e `src/services/quote.service.ts`
+- **Adapter Sankhya:** `src/adapters/sankhya.api.ts`
 
 ## 🛡️ REGRAS DE OURO - PDF UPLOAD SANKHYA
 1. **sessionKey:** Sempre `ANEXO_SISTEMA_CabecalhoNota_${nunota}` para o Gateway Sankhya identificar.
@@ -48,11 +49,11 @@ Antes de finalizar qualquer task, verifique:
 - **Be Specific:** Não busque na raiz `.`. Foque em diretórios específicos como `src/` ou `app.functions/`.
 
 ## 🧪 VALIDATION COMMANDS
-- **Backend Check:** `wsl -d Ubuntu-22.04 sh -c "cd /home/rochagabriel/dev/tradipar && node --check aws-server-alef/index.js"`
+- **Backend Check:** `wsl -d Ubuntu-22.04 sh -c "cd /home/rochagabriel/dev/tradipar/tradipar-core-api && npm run build && node --check dist/server.js"`
 - **HubSpot Upload:** Para comandos `hs`, prefira usar via PowerShell no Windows se o binário Linux falhar: `powershell -Command "cd \\\\wsl.localhost\\Ubuntu-22.04\\home\\rochagabriel\\dev\\tradipar\\... ; hs project upload"`
 
 ## 🛑 REGRAS DE EXECUÇÃO MCP (MANDATÓRIO)
 1. **Grep/Read/Ls:** Ao chamar estas ferramentas, converta AUTOMATICAMENTE qualquer caminho `\\wsl.localhost` para `/home/rochagabriel/...`.
-   - *Exemplo Input:* `\\wsl.localhost\Ubuntu-22.04\home\rochagabriel\dev\tradipar\index.js`
-   - *Exemplo Tool Call:* `path: "/home/rochagabriel/dev/tradipar/index.js"`
+   - *Exemplo Input:* `\\wsl.localhost\Ubuntu-22.04\home\rochagabriel\dev\tradipar\tradipar-core-api\src\server.ts`
+   - *Exemplo Tool Call:* `path: "/home/rochagabriel/dev/tradipar/tradipar-core-api/src/server.ts"`
 2. **Terminal:** Se for rodar comandos via `run_command` que dependem de variáveis de ambiente Windows (como `hs` instalado no Windows), use `powershell`. Se for script nativo (node, npm), use `wsl`.
