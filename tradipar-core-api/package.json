@@ -1,0 +1,27 @@
+{
+  "name": "tradipar-core-api",
+  "version": "1.0.0",
+  "description": "Enterprise Core API for Tradipar orchestrating Sankhya and HubSpot with modern auth",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "nodemon -e ts -x ts-node src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "axios": "^1.13.2",
+    "cors": "^2.8.5",
+    "dotenv": "^17.3.1",
+    "express": "^4.21.1",
+    "form-data": "^4.0.5"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/form-data": "^2.2.1",
+    "@types/node": "^22.9.0",
+    "nodemon": "^3.1.7",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.3"
+  }
+}
