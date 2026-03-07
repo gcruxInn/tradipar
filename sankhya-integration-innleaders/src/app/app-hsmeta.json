@@ -18,7 +18,8 @@
     "permittedUrls": {
       "fetch": [
         "https://api.hubapi.com",
-        "https://api.gcrux.com"
+        "https://api.gcrux.com",
+        "https://api.gcrux.com:3005"
       ],
       "iframe": [],
       "img": []

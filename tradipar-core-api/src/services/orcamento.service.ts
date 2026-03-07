@@ -118,27 +118,33 @@ export class OrcamentoService {
 
     // 8. Fetch Auto-generated CODNAT
     let codNat: string | number = "101001";
+    let numNota: string | number = nunota;
     try {
       const queryPayload = {
         serviceName: "DbExplorerSP.executeQuery",
         requestBody: {
-          sql: `SELECT CODNAT FROM TGFCAB WHERE NUNOTA = ${nunota}`
+          sql: `SELECT CODNAT, NUMNOTA FROM TGFCAB WHERE NUNOTA = ${nunota}`
         }
       };
       const queryResp = await sankhyaApi.post<any>(
         `/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json`,
         queryPayload
       );
-      codNat = queryResp.data.responseBody?.rows?.[0]?.[0] || codNat;
-      console.log(`[OrcamentoService] Evaluated CODNAT for NUNOTA ${nunota}: ${codNat}`);
+      const row = queryResp.data.responseBody?.rows?.[0];
+      if (row) {
+        codNat = row[0] || codNat;
+        numNota = row[1] || numNota;
+      }
+      console.log(`[OrcamentoService] Evaluated CODNAT (${codNat}) and NUMNOTA (${numNota}) for NUNOTA ${nunota}`);
     } catch (e: any) {
-      console.warn(`[OrcamentoService] Failed to evaluate auto CODNAT: ${e.message}`);
+      console.warn(`[OrcamentoService] Failed to evaluate auto CODNAT/NUMNOTA: ${e.message}`);
     }
 
     // 9. Update HubSpot Deal
     try {
       await hubspotApi.updateDeal(dealId, {
         orcamento_sankhya: nunota.toString(),
+        sankhya_nunota: numNota.toString(),
         natureza_id: codNat.toString()
       });
       console.log(`[OrcamentoService] Deal ${dealId} synced with NUNOTA ${nunota}`);
@@ -225,8 +231,6 @@ export class OrcamentoService {
 
         if (action === "UPDATE" && existing) {
           itemData.SEQUENCIA = { "$": existing.sequencia };
-        } else if (action === "CREATE") {
-          itemData.SEQUENCIA = { "$": "" };
         }
 
         const insertPayload = {
@@ -238,7 +242,9 @@ export class OrcamentoService {
         if (resp.data.status !== "1") throw new Error(resp.data.statusMessage || "Erro desconhecido via CACSP");
         
       } catch (err: any) {
-        errors.push(`Falha ao ${action} item ${key}: ${err.message}`);
+        const backendError = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+        console.error(`[OrcamentoService] Error details for ${action} item ${key}:`, backendError);
+        errors.push(`Falha ao ${action} item ${key}: ${err.message} | ${backendError}`);
       }
     }
 

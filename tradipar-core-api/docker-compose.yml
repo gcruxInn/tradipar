@@ -9,6 +9,9 @@ services:
       - "3005:3000"
     env_file:
       - .env
+    volumes:
+      - ./dist:/app/dist
+      - ./.env:/app/.env
     logging:
       driver: "json-file"
       options:

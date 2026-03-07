@@ -23,14 +23,19 @@
 Antes de finalizar qualquer task, verifique:
 1.  **Path Mapping:** Converta caminhos Windows (`\\wsl.localhost`) para Linux (`/home/...`) antes de rodar ferramentas.
 2.  **Anti-Timeout:** Ignore explicitamente `node_modules`, `.git` e `dist` em buscas (`grep`/`glob`).
-3.  **Sanity Check:** Rode `wsl -d Ubuntu-22.04 sh -c "cd /home/rochagabriel/dev/tradipar && node --check aws-server-alef/index.js"` e `hs project validate`.
+3.  **Sanity Check:** Rode `wsl -d Ubuntu-22.04 sh -c "cd /home/rochagabriel/dev/tradipar/tradipar-core-api && node --check dist/server.js"` e `hs project validate`.
 
 ## 📂 ESTRUTURA DE ARQUIVOS (CONTEXT MAP)
 - **Root:** `/home/rochagabriel/dev/tradipar/`
 - **Frontend App:** `/home/rochagabriel/dev/tradipar/sankhya-integration-innleaders`
-- **Backend API:** `/home/rochagabriel/dev/tradipar/aws-server-alef`
+- **Backend API:** `/home/rochagabriel/dev/tradipar/tradipar-core-api`
 - **Arquivo Principal UI:** `src/app/cards/PrecosCard.tsx`
-- **Arquivo Principal Motor:** `index.js`
+- **Services Principal:** `src/services/order.service.ts` e `src/services/quote.service.ts`
+
+## 🛡️ REGRAS DE OURO - PDF UPLOAD SANKHYA
+1. **sessionKey:** Sempre `ANEXO_SISTEMA_CabecalhoNota_${nunota}` para o Gateway Sankhya identificar.
+2. **fitem=S:** Obrigatório na URL para evitar erro de casting `[B`.
+3. **Multipart Headers:** Sempre enviar `Content-Length` explicitamente para o Gateway.
 
 ## 🛠️ SYSTEM ENVIRONMENT & PATH GUIDELINES (CRITICAL)
 - **🚨 WSL PATH MAPPING:** Para ferramentas do MCP (ClaudeCode/Grep/Read/Ls/etc), **NUNCA** use caminhos Windows UNC (`\\wsl.localhost\...` ou `//wsl.localhost/...`).

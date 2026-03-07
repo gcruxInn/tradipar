@@ -19,12 +19,12 @@ Ative a Arquitetura de Agentes (Blueprint Tradipar) e proceda no Modo EXECUTION 
 **Problema:** O vendedor não é engajado com a perda de rentabilidade.
 **Ordem (`hubspot-ui-dev`):** Quando houver prejuízo na rentabilidade de qualquer item (calculado via Proxy), exiba Notificações/Alertas claros bloqueantes: "Atenção: Você deve ajustar os valores do item XYZ (rentabilidade negativa)". Se baseie no modelo de tabela de itens em prejuízo que existe nativamente no Sankhya. Se houver prejuízo, o vendedor não pode avançar o negócio.
 
-### 4. Sincronização Final e Importação de PDF de Cotação (Proxy e Java Core)
-**Problema:** Após as mutações no orçamento do HubSpot (clonar, editar quantidade/preço), o Sankhya precisa obrigatoriamente ser atualizado. Somente se os estoques existirem e a rentabilidade for positiva, o orçamento pode ser confirmado.
-**Ordem (`node-proxy-dev` + `sankhya-java-dev`):** 
-1. Realize o PUT de Update pro Sankhya refletindo as cartelas de produtos e lotes finais.
-2. Intercepte a confirmação de nota (Confirmar Orçamento).
-3. **Download Rápido:** Verifique nas pastas (`aws-server-alef` ou endpoints no Java) se já existe a fundação de código para baixar o "PDF do Orçamento". Traga esse PDF e instancie-o nos "Anexos" do Deal ativo no HubSpot.
-
+### 4. Sincronização Final e Geração de Pedido (TOP 1010)
+**Status:** O `tradipar-core-api` ( v2.0) já gera e anexa o PDF do orçamento automaticamente ao Sankhya e ao HubSpot no momento da confirmação. O erro de `FileItem` foi resolvido com o envio explícito de `Content-Length`.
+**Novo Desafio:** Após confirmar o orçamento (TOP 1), o sistema deve gerar automaticamente o Pedido (TOP 1010). Atualmente, a nota é confirmada mas o pedido com a nova TOP não está sendo criado/vinculado.
+**Ordem (`tradipar-core-api-dev`):** 
+1. Investigue por que a confirmação da TOP 1 não está evoluindo para a TOP 1010 no Sankhya via `CACSP.confirmarNota`.
+2. Garanta que o novo `NUNOTA` do pedido seja capturado e atualizado no HubSpot no campo `sankhya_nu_unico_pedido`.
+3. Mantenha o fluxo de auto-anexo de PDF ativo para o novo pedido gerado.
 ### Protocolo de Validação
 Antes de aplicar uploads/deploys das soluções para o fluxo acima, acione o `build_probe.sh` para a skill em questão provando a estabilidade da sintaxe (TypeScript e Node) via `// turbo`. Mantenha-me atualizado informando em qual item estamos focando via comandos `notify_user`!

@@ -56,12 +56,14 @@ interface QuoteStatus {
     hasQuote: boolean;
     nunota: number | null;
     isConfirmed: boolean;
+    isOrderConfirmed?: boolean;
     isRentavel: boolean;
     buttonAction: string;
     buttonLabel: string;
     profitability?: Profitability;
     profitabilityError?: string;
     statusNota?: string;
+    nrNota?: string | number;
 }
 
 interface Profitability {
@@ -241,12 +243,14 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     const [releaseEvents, setReleaseEvents] = useState<any[]>([]);
     const [pedidoNuUnico, setPedidoNuUnico] = useState<string | null>(null);
     const [obsInterna, setObsInterna] = useState('');
-    const [pedidoAnexoName, setPedidoAnexoName] = useState<string | null>(null);
     const [pedidoAnexoBase64, setPedidoAnexoBase64] = useState<string | null>(null);
+    const [pedidoAnexoName, setPedidoAnexoName] = useState<string | null>(null);
+    const [attachmentMethod, setAttachmentMethod] = useState<'upload' | 'pdf'>('pdf');
     const [checkoutLoading, setCheckoutLoading] = useState(false);
     const [checkoutMessage, setCheckoutMessage] = useState<string | null>(null);
     const [checkoutError, setCheckoutError] = useState<string | null>(null);
     const releaseIntervalRef = useRef<any>(null);
+    const hasAutoAdvancedRef = useRef(false);
 
     // Add Item State
     const [searchTerm, setSearchTerm] = useState("");
@@ -438,7 +442,16 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             const response = await hubspot.fetch(`${BASE_API_URL}/hubspot/quote-status/${context.crm.objectId}`, { method: "GET" });
             if (response.ok) {
                 const result = await response.json();
-                if (result.success) setQuoteStatus(result.status);
+                if (result.success) {
+                    setQuoteStatus(result.status);
+                    
+                    // Auto-avançar para a aba Fechamento (Preparar Pedido) se já estiver confirmado
+                    if (result.status?.isConfirmed && !hasAutoAdvancedRef.current) {
+                        hasAutoAdvancedRef.current = true;
+                        setCurrentStep(2);
+                        setCheckoutSubStep(result.status.isOrderConfirmed ? 4 : 2); 
+                    }
+                }
             }
         } catch (err) {
             console.error("Failed to fetch quote status:", err);
@@ -868,8 +881,8 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                         {hasBudget && (
                             <Flex gap="md" wrap="wrap">
                                 <Flex direction="column" gap="extra-small">
-                                    <Text variant="microcopy">Nro. Único (NUNOTA)</Text>
-                                    <Text format={{ fontWeight: "bold" }}>#{quoteStatus?.nunota}</Text>
+                                    <Text variant="microcopy">Nro. Nota</Text>
+                                    <Text format={{ fontWeight: "bold" }}>#{quoteStatus?.nrNota || quoteStatus?.nunota}</Text>
                                 </Flex>
                                 <Flex direction="column" gap="extra-small">
                                     <Text variant="microcopy">Itens no Orçamento</Text>
@@ -901,7 +914,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                             </Alert>
                         ) : isConfirmed ? (
                             <Alert title="Orçamento Confirmado e Faturado" variant="success">
-                                Este orçamento já foi confirmado no Sankhya. NUNOTA: <Text inline={true} format={{ fontWeight: "bold" }}>#{quoteStatus?.nunota}</Text>. Acesse o passo de Fechamento para ver os detalhes completos.
+                                Este orçamento já foi confirmado no Sankhya. Nro. Nota: <Text inline={true} format={{ fontWeight: "bold" }}>#{quoteStatus?.nrNota || quoteStatus?.nunota}</Text>. Acesse o passo de Fechamento para ver os detalhes completos.
                             </Alert>
                         ) : (!data?.items || data.items.length === 0) ? (
                             <Alert title="Orçamento Vazio" variant="info">
@@ -1249,7 +1262,11 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                     <Button
                         onClick={() => {
                             const needsRelease = quoteStatus?.profitability && !quoteStatus.profitability.isRentavel;
-                            setCheckoutSubStep(needsRelease ? 0 : 1);
+                            if (quoteStatus?.isConfirmed) {
+                                setCheckoutSubStep(2); // Vai direto para enviar pedido
+                            } else {
+                                setCheckoutSubStep(needsRelease ? 0 : 1);
+                            }
                             setCheckoutError(null);
                             setCheckoutMessage(null);
                             setCurrentStep(2);
@@ -1371,6 +1388,29 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             }
         };
 
+        const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+            const file = e.target.files?.[0];
+            if (file) {
+                if (file.size > 2 * 1024 * 1024) { // 2MB limit
+                    setCheckoutError('O arquivo excede o tamanho máximo de 2MB.');
+                    setPedidoAnexoName(null);
+                    setPedidoAnexoBase64(null);
+                    return;
+                }
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    const base64String = (reader.result as string).split(',')[1];
+                    setPedidoAnexoBase64(base64String);
+                    setPedidoAnexoName(file.name);
+                    setCheckoutError(null);
+                };
+                reader.readAsDataURL(file);
+            } else {
+                setPedidoAnexoName(null);
+                setPedidoAnexoBase64(null);
+            }
+        };
+
         // === Helper: Save obs + attach file (sub-step 2) ===
         const handlePrepareOrder = async () => {
             if (!obsInterna.trim()) {
@@ -1391,8 +1431,19 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 const obsRes = await obsResp.json();
                 if (!obsRes.success) throw new Error(obsRes.error || 'Falha ao salvar obs');
 
-                // 2. Attach file if provided
-                if (pedidoAnexoBase64 && pedidoAnexoName) {
+                // 2. Attach file or PDF
+                if (attachmentMethod === 'pdf') {
+                    const anexoResp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/anexar-pdf`, {
+                        method: "POST",
+                        body: {
+                            dealId: context.crm.objectId,
+                            nunotaPedido: nunotaPedido,
+                            nunotaOrcamento: quoteStatus?.nunota
+                        }
+                    });
+                    const anexoRes = await anexoResp.json();
+                    if (!anexoRes.success) throw new Error(anexoRes.error || 'Falha ao anexar PDF');
+                } else if (attachmentMethod === 'upload' && pedidoAnexoBase64 && pedidoAnexoName) {
                     const anexoResp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/anexar`, {
                         method: "POST",
                         body: {
@@ -1404,9 +1455,11 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                     });
                     const anexoRes = await anexoResp.json();
                     if (!anexoRes.success) throw new Error(anexoRes.error || 'Falha ao anexar arquivo');
+                } else {
+                    throw new Error('Você deve selecionar um arquivo ou usar o PDF do orçamento.');
                 }
 
-                setCheckoutMessage('Observação salva' + (pedidoAnexoName ? ' e arquivo anexado' : '') + ' com sucesso!');
+                setCheckoutMessage('Observação salva e arquivo anexado com sucesso!');
                 setTimeout(() => setCheckoutSubStep(3), 1500);
             } catch (e: any) {
                 setCheckoutError(e.message);
@@ -1454,7 +1507,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                     <Flex direction="column" gap="md">
 
                         {/* === ESTADO: JÁ CONFIRMADO === */}
-                        {isConfirmed ? (
+                        {quoteStatus?.isOrderConfirmed ? (
                             <Flex direction="column" gap="md">
                                 <Flex justify="between" align="center">
                                     <Heading>📋 Resumo do Fechamento</Heading>
@@ -1465,8 +1518,8 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                 {/* Bloco NUNOTA + dados-chave */}
                                 <Flex gap="md" wrap="wrap">
                                     <Flex direction="column" gap="extra-small">
-                                        <Text variant="microcopy">Nro. Único Sankhya</Text>
-                                        <Text format={{ fontWeight: "bold" }}>#{quoteStatus?.nunota}</Text>
+                                        <Text variant="microcopy">Nro. Nota Sankhya</Text>
+                                        <Text format={{ fontWeight: "bold" }}>#{quoteStatus?.nrNota || quoteStatus?.nunota}</Text>
                                     </Flex>
                                     <Flex direction="column" gap="extra-small">
                                         <Text variant="microcopy">Itens Faturados</Text>
@@ -1528,7 +1581,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                             <Flex direction="column" gap="md">
                                 <Flex justify="between" align="center">
                                     <Heading>📋 Fechamento</Heading>
-                                    <Text variant="microcopy">NUNOTA: #{quoteStatus?.nunota || '—'}</Text>
+                                    <Text variant="microcopy">Nro. Nota: #{quoteStatus?.nrNota || quoteStatus?.nunota || '—'}</Text>
                                 </Flex>
 
                                 <StepIndicator
@@ -1675,27 +1728,53 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
                                         <Divider />
 
-                                        <Text format={{ fontWeight: "bold" }}>📎 Pedido de Compra do Cliente (obrigatório, máx 2MB)</Text>
-                                        {pedidoAnexoName ? (
-                                            <Flex gap="sm" align="center">
-                                                <Tag variant="success">📄 {pedidoAnexoName}</Tag>
-                                                <Button size="xs" variant="secondary" onClick={() => { setPedidoAnexoName(null); setPedidoAnexoBase64(null); }}>
-                                                    ❌ Remover
+                                        <Text format={{ fontWeight: "bold" }}>📎 Arquivo do Pedido (Obrigatório, máx 2MB)</Text>
+
+                                        <Select
+                                            name="attachment-method"
+                                            options={[
+                                                { label: "Usar PDF gerado do próprio Orçamento no Sankhya", value: "pdf" },
+                                                { label: "Enviar pedido de compra do cliente em anexo", value: "upload" }
+                                            ]}
+                                            value={attachmentMethod}
+                                            onChange={(val) => {
+                                                setAttachmentMethod(val as 'upload' | 'pdf');
+                                            }}
+                                        />
+
+                                        {attachmentMethod === 'upload' && (
+                                            <Flex direction="column" gap="sm">
+                                                {pedidoAnexoName ? (
+                                                    <Tag variant="success">📄 {pedidoAnexoName}</Tag>
+                                                ) : (
+                                                    // @ts-ignore
+                                                    <Input type="file" name="file-pedido" onChange={handleFileChange as any} accept=".pdf,.png,.jpg,.jpeg" />
+                                                )}
+                                                <Button
+                                                    disabled={!pedidoAnexoBase64}
+                                                    onClick={() => {
+                                                        setPedidoAnexoBase64(null);
+                                                        setPedidoAnexoName(null);
+                                                    }}
+                                                    size="xs"
+                                                >
+                                                    Remover anexo
                                                 </Button>
                                             </Flex>
-                                        ) : (
-                                            <Alert title="Arquivo necessário" variant="info">
-                                                O pedido de compra do cliente deve ser anexado ao registro no Sankhya antes da confirmação.
-                                                Envie o arquivo via API ou diretamente no Sankhya para prosseguir.
-                                            </Alert>
                                         )}
+
+                                        <Alert title={attachmentMethod === 'pdf' ? "Gerar Automático" : "Arquivo necessário"} variant="info">
+                                            {attachmentMethod === 'pdf'
+                                                ? "O backend irá gerar o PDF da top de orçamento 999 no Sankhya, anexá-lo ao Deal do HubSpot, e vinculá-lo ao novo pedido TOP 1010 automaticamente."
+                                                : "O pedido de compra do cliente deve ser anexado ao registro no Sankhya antes da confirmação."}
+                                        </Alert>
 
                                         <Button
                                             variant="primary"
                                             onClick={handlePrepareOrder}
-                                            disabled={checkoutLoading || !obsInterna.trim()}
+                                            disabled={checkoutLoading || !obsInterna.trim() || (attachmentMethod === 'upload' && !pedidoAnexoBase64)}
                                         >
-                                            {checkoutLoading ? 'Salvando...' : '📤 Enviar OBS e Avançar'}
+                                            {checkoutLoading ? 'Enviando...' : '📤 Enviar OBS, Anexar e Avançar'}
                                         </Button>
                                     </Flex>
                                 )}

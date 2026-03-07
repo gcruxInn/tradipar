@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { orderService } from '../services/order.service';
+import { quoteService } from '../services/quote.service';
 
 export class OrderController {
 
@@ -85,15 +86,50 @@ export class OrderController {
   // POST /sankhya/pedido/anexar
   public async attachFileToOrder(req: Request, res: Response): Promise<void> {
     try {
-      const { nunota, descricao, fileBase64, fileName } = req.body;
+      const { nunota, descricao, fileBase64, fileName, dealId } = req.body;
       if (!nunota || !fileBase64 || !fileName) {
         res.status(400).json({ success: false, error: "nunota, fileBase64 e fileName são obrigatórios" });
         return;
       }
       const result = await orderService.attachFileToOrder(nunota, fileBase64, fileName, descricao);
+
+      // Sincronizar com HubSpot se dealId for fornecido
+      if (dealId) {
+        try {
+          await quoteService.attachFileToHubspot(dealId, nunota, fileBase64, fileName);
+        } catch (hsErr: any) {
+          console.warn(`[PEDIDO ANEXAR] Falha ao sincronizar com HubSpot: ${hsErr.message}`);
+        }
+      }
+
       res.json(result);
     } catch (error: any) {
       console.error(`[PEDIDO ANEXAR ERROR] ${error.message}`);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  // POST /sankhya/pedido/anexar-pdf
+  public async attachGeneratedPdfToOrder(req: Request, res: Response): Promise<void> {
+    try {
+      const { nunotaPedido, nunotaOrcamento, dealId } = req.body;
+      if (!nunotaPedido || !nunotaOrcamento || !dealId) {
+        res.status(400).json({ success: false, error: "nunotaPedido, nunotaOrcamento e dealId são obrigatórios" });
+        return;
+      }
+
+      // Generate PDF from the quote
+      const pdfResult = await quoteService.generateSankhyaPDF(nunotaOrcamento);
+
+      // Attach PDF to Sankhya Order
+      await orderService.attachFileToOrder(nunotaPedido, pdfResult.base64, pdfResult.fileName, 'PDF Orçamento');
+
+      // Attach PDF to HubSpot Deal
+      await quoteService.attachPdfToHubspot(dealId, nunotaOrcamento);
+
+      res.json({ success: true, message: "PDF gerado, anexado ao pedido Sankhya e ao negócio HubSpot com sucesso." });
+    } catch (error: any) {
+      console.error(`[PEDIDO ANEXAR PDF ERROR] ${error.message}`);
       res.status(500).json({ success: false, error: error.message });
     }
   }
@@ -108,6 +144,15 @@ export class OrderController {
         return;
       }
       const result = await orderService.confirmOrder(nunota, dealId);
+
+      // Tentar anexar o PDF automaticamente ao HubSpot após confirmação
+      try {
+        console.log(`[PEDIDO CONFIRMAR] Tentando anexar PDF do pedido #${nunota} ao HubSpot...`);
+        await quoteService.attachPdfToHubspot(dealId, nunota);
+      } catch (pdfErr: any) {
+        console.warn(`[PEDIDO CONFIRMAR] Falha ao auto-anexar PDF no HubSpot: ${pdfErr.message}`);
+      }
+
       res.json(result);
     } catch (error: any) {
       console.error(`[PEDIDO CONFIRMAR ERROR] ${error.message}`);
