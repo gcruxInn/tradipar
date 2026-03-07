@@ -109,6 +109,8 @@ interface PrecosCardProps {
     onRefreshProperties: () => void;
 }
 
+const BASE_API_URL = "https://api.gcrux.com";
+
 const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps & { actions: any }) => {
     // DEBUG: Inspect available actions
     useEffect(() => console.log("[DEBUG] Available Actions:", Object.keys(actions || {})), [actions]);
@@ -186,7 +188,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         if (availableControls[cacheKey]) return;
 
         try {
-            const resp = await hubspot.fetch(`https://api.gcrux.com/hubspot/products/controls/${codProd}?codEmp=${targetCodEmp}`);
+            const resp = await hubspot.fetch(`${BASE_API_URL}/hubspot/products/controls/${codProd}?codEmp=${targetCodEmp}`);
             const res = await resp.json();
             if (res.success) {
                 setAvailableControls(prev => ({ ...prev, [cacheKey]: res.controls }));
@@ -361,7 +363,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         try {
             // Fetch prices and specific deal properties in parallel
             const [response, props] = await Promise.all([
-                hubspot.fetch("https://api.gcrux.com/hubspot/prices/deal", {
+                hubspot.fetch(`${BASE_API_URL}/hubspot/prices/deal`, {
                     method: "POST",
                     body: { objectId: context.crm.objectId }
                 }),
@@ -433,7 +435,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
     const fetchQuoteStatus = async () => {
         try {
-            const response = await hubspot.fetch(`https://api.gcrux.com/hubspot/quote-status/${context.crm.objectId}`, { method: "GET" });
+            const response = await hubspot.fetch(`${BASE_API_URL}/hubspot/quote-status/${context.crm.objectId}`, { method: "GET" });
             if (response.ok) {
                 const result = await response.json();
                 if (result.success) setQuoteStatus(result.status);
@@ -448,7 +450,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         if (val === null || val === undefined) return;
         setSaving(true);
         try {
-            const response = await hubspot.fetch("https://api.gcrux.com/hubspot/update/deal", {
+            const response = await hubspot.fetch(`${BASE_API_URL}/hubspot/update/deal`, {
                 method: "POST",
                 body: { objectId: context.crm.objectId, amount: val }
             });
@@ -474,7 +476,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     const handleSaveQuantity = async (itemId: string, newQty: number) => {
         if (!data) return;
         try {
-            await hubspot.fetch("https://api.gcrux.com/hubspot/update/line-item", {
+            await hubspot.fetch(`${BASE_API_URL}/hubspot/update/line-item`, {
                 method: "POST",
                 body: { lineItemId: itemId, quantity: newQty }
             });
@@ -537,7 +539,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         setSelectedPriceTypes(prev => ({ ...prev, [itemId]: type }));
 
         try {
-            await hubspot.fetch("https://api.gcrux.com/hubspot/update/line-item", {
+            await hubspot.fetch(`${BASE_API_URL}/hubspot/update/line-item`, {
                 method: "POST",
                 body: { lineItemId: itemId, price: unitPrice }
             });
@@ -572,7 +574,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             const itemTotal = unit * item.quantity;
             total += itemTotal;
             newPrices[item.id] = itemTotal;
-            hubspot.fetch("https://api.gcrux.com/hubspot/update/line-item", {
+            hubspot.fetch(`${BASE_API_URL}/hubspot/update/line-item`, {
                 method: "POST", body: { lineItemId: item.id, price: unit }
             }).catch(console.error);
         }
@@ -611,7 +613,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     const handleDuplicateItem = async (lineItemId: string) => {
         setDuplicatingItemId(lineItemId);
         try {
-            const resp = await hubspot.fetch("https://api.gcrux.com/hubspot/duplicate-line-item", {
+            const resp = await hubspot.fetch(`${BASE_API_URL}/hubspot/duplicate-line-item`, {
                 method: "POST", body: { dealId: context.crm.objectId, lineItemId }
             });
             const res = await resp.json();
@@ -641,7 +643,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         if (q.length < 3) { setSearchResults([]); return; }
         setSearching(true);
         try {
-            const resp = await hubspot.fetch("https://api.gcrux.com/hubspot/products/search", {
+            const resp = await hubspot.fetch(`${BASE_API_URL}/hubspot/products/search`, {
                 method: "POST", body: { query: q }
             });
             const res = await resp.json();
@@ -654,7 +656,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         if (!selectedProduct) return;
         setAddingItem(true);
         try {
-            const resp = await hubspot.fetch("https://api.gcrux.com/hubspot/line-item/add", {
+            const resp = await hubspot.fetch(`${BASE_API_URL}/hubspot/line-item/add`, {
                 method: "POST",
                 body: {
                     dealId: context.crm.objectId,
@@ -682,7 +684,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
     const handleDeleteItem = async (lineItemId: string) => {
         try {
-            const resp = await hubspot.fetch(`https://api.gcrux.com/hubspot/line-item/${lineItemId}`, {
+            const resp = await hubspot.fetch(`${BASE_API_URL}/hubspot/line-item/${lineItemId}`, {
                 method: "DELETE"
             });
             const res = await resp.json();
@@ -704,7 +706,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
     const handleUpdateItemControl = async (lineItemId: string, control: string) => {
         try {
-            const resp = await hubspot.fetch("https://api.gcrux.com/hubspot/line-item/update", {
+            const resp = await hubspot.fetch(`${BASE_API_URL}/hubspot/line-item/update`, {
                 method: "POST",
                 body: { lineItemId, properties: { sankhya_controle: control } }
             });
@@ -729,7 +731,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     const handleConvertToOrder = async () => {
         setConverting(true);
         try {
-            const resp = await hubspot.fetch("https://api.gcrux.com/hubspot/convert-to-order", {
+            const resp = await hubspot.fetch(`${BASE_API_URL}/hubspot/convert-to-order`, {
                 method: "POST", body: { objectId: context.crm.objectId }
             });
             const res = await resp.json();
@@ -756,14 +758,14 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     const handleGenerateHeader = async () => {
         setLoading(true);
         try {
-            const resp = await hubspot.fetch("https://api.gcrux.com/hubspot/generate-header", {
+            const resp = await hubspot.fetch(`${BASE_API_URL}/hubspot/generate-header`, {
                 method: "POST", body: { dealId: context.crm.objectId }
             });
             const res = await resp.json();
             if (res.success) {
                 // Ao criar a capa do orçamento, forçar uma sincronização para popular os itens
                 if (res.nunota) {
-                    await hubspot.fetch("https://api.gcrux.com/hubspot/sync-quote-items", {
+                    await hubspot.fetch(`${BASE_API_URL}/hubspot/sync-quote-items`, {
                         method: "POST", body: { dealId: context.crm.objectId, nunota: res.nunota }
                     }).catch(console.error);
                 }
@@ -939,7 +941,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         if (!silent) setSyncResult(null);
 
         try {
-            const resp = await hubspot.fetch("https://api.gcrux.com/hubspot/sync-quote-items", {
+            const resp = await hubspot.fetch(`${BASE_API_URL}/hubspot/sync-quote-items`, {
                 method: "POST",
                 body: { dealId: context.crm.objectId, nunota: quoteStatus.nunota }
             });
@@ -981,7 +983,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         if (!quoteStatus?.nunota || syncing) return;
 
         // Background silent sync
-        hubspot.fetch("https://api.gcrux.com/hubspot/sync-quote-items", {
+        hubspot.fetch(`${BASE_API_URL}/hubspot/sync-quote-items`, {
             method: "POST",
             body: { dealId: context.crm.objectId, nunota: quoteStatus.nunota }
         }).then((resp) => resp.json()).then((res) => {
@@ -1279,7 +1281,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         const fetchLiberadores = async (searchQuery = '') => {
             try {
                 const qs = searchQuery ? `?q=${encodeURIComponent(searchQuery)}&limit=20` : '?limit=20';
-                const resp = await hubspot.fetch(`https://api.gcrux.com/sankhya/liberadores/buscar${qs}`, { method: "GET" });
+                const resp = await hubspot.fetch(`${BASE_API_URL}/sankhya/liberadores/buscar${qs}`, { method: "GET" });
                 const res = await resp.json();
                 if (res.success) setReleaseUsers(res.liberadores || []);
             } catch (e: any) {
@@ -1291,7 +1293,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         const fetchReleaseEvents = async () => {
             if (!quoteStatus?.nunota) return;
             try {
-                const resp = await hubspot.fetch(`https://api.gcrux.com/sankhya/liberacoes/pendentes/${quoteStatus.nunota}`, { method: "GET" });
+                const resp = await hubspot.fetch(`${BASE_API_URL}/sankhya/liberacoes/pendentes/${quoteStatus.nunota}`, { method: "GET" });
                 const res = await resp.json();
                 if (res.success) {
                     setReleaseEvents(res.pendentes || []);
@@ -1315,7 +1317,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             setCheckoutError(null);
             try {
                 const evento = releaseEvents[0];
-                const resp = await hubspot.fetch('https://api.gcrux.com/sankhya/liberacoes/definir', {
+                const resp = await hubspot.fetch(`${BASE_API_URL}/sankhya/liberacoes/definir`, {
                     method: "POST",
                     body: {
                         nunota: quoteStatus.nunota,
@@ -1346,7 +1348,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             try {
                 const body: any = { dealId: context.crm.objectId, nunota: quoteStatus?.nunota };
                 if (needsRelease) body.forceConfirm = true;
-                const resp = await hubspot.fetch('https://api.gcrux.com/hubspot/confirm-quote', { method: "POST", body });
+                const resp = await hubspot.fetch(`${BASE_API_URL}/hubspot/confirm-quote`, { method: "POST", body });
                 const res = await resp.json();
                 if (res.success && res.confirmed) {
                     setPedidoNuUnico(res.nuUnicoPedido || null);
@@ -1382,7 +1384,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             setCheckoutError(null);
             try {
                 // 1. Save obs
-                const obsResp = await hubspot.fetch(`https://api.gcrux.com/sankhya/pedido/obs/${nunotaPedido}`, {
+                const obsResp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/obs/${nunotaPedido}`, {
                     method: "PUT",
                     body: { obs: obsInterna }
                 });
@@ -1391,7 +1393,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
                 // 2. Attach file if provided
                 if (pedidoAnexoBase64 && pedidoAnexoName) {
-                    const anexoResp = await hubspot.fetch('https://api.gcrux.com/sankhya/pedido/anexar', {
+                    const anexoResp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/anexar`, {
                         method: "POST",
                         body: {
                             nunota: nunotaPedido,
@@ -1421,7 +1423,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             setCheckoutLoading(true);
             setCheckoutError(null);
             try {
-                const resp = await hubspot.fetch(`https://api.gcrux.com/sankhya/pedido/confirmar/${nunotaPedido}`, {
+                const resp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/confirmar/${nunotaPedido}`, {
                     method: "POST",
                     body: { dealId: context.crm.objectId }
                 });
