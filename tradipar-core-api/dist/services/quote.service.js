@@ -262,20 +262,22 @@ class QuoteService {
         };
     }
     async confirmQuote(dealId, nunota, forceConfirm = false) {
-        const profResult = await this.getProfitabilityInternal(nunota);
-        if (!profResult.success || !profResult.profitability) {
-            throw new Error(`Não foi possível verificar rentabilidade: ${profResult.error}`);
-        }
-        const profitability = profResult.profitability;
-        const needsRelease = !profitability.isRentavel;
-        if (needsRelease && !forceConfirm) {
-            return {
-                success: true,
-                confirmed: false,
-                needsRelease: true,
-                profitability,
-                message: "Liberação necessária antes de confirmar. Lucro abaixo do mínimo permitido."
-            };
+        // Otimização: Skip redundant profitability check if already confirmed by UI or forceConfirm
+        if (!forceConfirm) {
+            const profResult = await this.getProfitabilityInternal(nunota);
+            if (!profResult.success || !profResult.profitability) {
+                throw new Error(`Não foi possível verificar rentabilidade: ${profResult.error}`);
+            }
+            const profitability = profResult.profitability;
+            if (!profitability.isRentavel) {
+                return {
+                    success: true,
+                    confirmed: false,
+                    needsRelease: true,
+                    profitability,
+                    message: "Liberação necessária antes de confirmar. Lucro abaixo do mínimo permitido."
+                };
+            }
         }
         const confirmResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mgecom/service.sbr?serviceName=CACSP.confirmarNota&outputType=json', {
             serviceName: "CACSP.confirmarNota",
@@ -288,29 +290,20 @@ class QuoteService {
         const pkNunota = confirmResp.data?.responseBody?.pk?.NUNOTA;
         if (pkNunota)
             confirmedNunota = (typeof pkNunota === 'object' && pkNunota.$) ? pkNunota.$ : pkNunota;
-        let nrNota = null;
-        try {
-            const nrNotaResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
+        // Run nrNota and nuUnicoPedido in parallel to speed up
+        const [nrNotaResp, pedidoResp] = await Promise.all([
+            sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
                 serviceName: "DbExplorerSP.executeQuery", requestBody: { sql: `SELECT NRNOTA FROM TGFCAB WHERE NUNOTA = ${confirmedNunota}` }
-            });
-            nrNota = nrNotaResp.data?.responseBody?.rows?.[0]?.[0];
-        }
-        catch (e) {
-            console.warn(`[CONFIRM-QUOTE] Falha ao buscar NRNOTA`, e);
-        }
-        let nuUnicoPedido = null;
-        try {
-            const pedidoResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
+            }).catch(() => null),
+            sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
                 serviceName: "DbExplorerSP.executeQuery", requestBody: { sql: `SELECT NUNOTA FROM TGFCAB WHERE NUNOTAORIG = ${confirmedNunota} AND CODTIPOPER = 1010 ORDER BY NUNOTA DESC` }
-            });
-            nuUnicoPedido = pedidoResp.data?.responseBody?.rows?.[0]?.[0];
-        }
-        catch (e) {
-            console.warn(`[CONFIRM-QUOTE] Pedido TOP 1010 não encontrado`, e);
-        }
+            }).catch(() => null)
+        ]);
+        const nrNota = nrNotaResp?.data?.responseBody?.rows?.[0]?.[0] || null;
+        const nuUnicoPedido = pedidoResp?.data?.responseBody?.rows?.[0]?.[0] || null;
         const dealProperties = {
             sankhya_nunota: String(nrNota || confirmedNunota),
-            dealstage: 'qualifiedtobuy' // original was dealing with another stage, adjusting as the original `qualifiedtobuy` is usually correct for the workflow
+            dealstage: 'qualifiedtobuy'
         };
         if (nuUnicoPedido)
             dealProperties.sankhya_nu_unico_pedido = String(nuUnicoPedido);
