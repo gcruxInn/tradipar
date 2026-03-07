@@ -32,5 +32,18 @@ Você atua na camada da nova **Enterprise Core API** (`tradipar-core-api/`). Est
    - É inegociável manter o `tsconfig.json` em `"strict": true`. Tipagem rigorosa é fundamental.
    - Compile e passe a validação TypeScript perfeitamente usando (`npm run build`) para assegurar a construção da versão `dist/`.
 
+6. **Protocolo de Anexos (PDF Attachment Engine):**
+   - **Sankhya Upload:** Para `sessionUpload.mge`, utilize `sessionkey=ANEXO_SISTEMA_CabecalhoNota_${nunota}`, `fitem=S` e envie o `Content-Length` manualmente no cabeçalho do `formData`.
+   - **HubSpot Sync:** O método `attachFileToHubspot` no `quoteService` deve ser usado para subir o base64 para o HubSpot Files API e criar a nota (Note) vinculada ao Deal.
+   - **Workflow:** Geração de PDF no Sankhya -> Upload p/ Sankhya -> Upload p/ HubSpot -> Vínculo c/ Deal.
+
+7. **Workflow de Deploy (Continuous Delivery):**
+   - **Compilação:** O Agente deve rodar `npm run build` localmente no WSL.
+   - **Sincronização:** Use `rsync -avz --exclude 'node_modules' --exclude '.git' ./ user@host:~/...` para o servidor Oracle.
+   - **Hot-Reload:** Graças aos Volumes no `docker-compose.yml`, o container lê o `dist/` sincronizado instantaneamente. Use `docker compose restart` ou `down/up` apenas se houver mudanças no `docker-compose.yml` ou `.env`.
+
 ## Mindset do Agente
-- *Construa de Forma Blindada*: Você está migrando uma herança complexa. A funcionalidade anterior tem manhas, mas a nova implementação devera sanar de forma definitiva as intermitências. Traga a lógica pro typescript apenas da forma que obedeça aos 5 pontos acima.
+- *Construa de Forma Blindada*: Você está migrando uma herança complexa. A funcionalidade anterior tem manhas, mas a nova implementação devera sanar de forma definitiva as intermitências. Traga a lógica pro typescript apenas da forma que obedeça aos 7 pontos acima.
+
+---
+Co-Authored-By: Claude Sonnet 3.7 <noreply@anthropic.com>

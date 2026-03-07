@@ -2,9 +2,11 @@
 description: Deploy ou atualização de módulos de orquestração via Node Proxy (Docker)
 ---
 
-# Deploy do AWS Server Alef (Protocolo Proxy)
+# Deploy do AWS Server Alef (⚠️ LEGACY - VER core-api-deploy)
 
-Ao editar o middleware Node.js, não jogue diretamente às escuras. O processo de publicação deve ser auditado.
+> [!CAUTION]
+> Este workflow refere-se ao motor legado `aws-server-alef/`. 
+> Para o novo framework `tradipar-core-api/`, utilize o workflow `/core-api-deploy.md`.
 
 // turbo
 1. Verifique a sintaxe fatal subjacente usando o roteamento rígido do WSL (conforme CLAUDE.md):

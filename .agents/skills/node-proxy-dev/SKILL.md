@@ -3,7 +3,11 @@ name: node-proxy-dev
 description: Habilidade para orquestração e self-healing do servidor proxy Node.js (AWS Server Alef).
 ---
 
-# Node Proxy Dev (Proxy Orchestrator)
+# Node Proxy Dev (Legacy Orchestrator - ⚠️ VER TRADIPAR-CORE-API)
+
+> [!CAUTION]
+> Esta habilidade refere-se ao motor legado `aws-server-alef/`. 
+> A partir de Março/2026, novas implementações devem ser feitas exclusivamente no novo framework `tradipar-core-api/` utilizando a skill `tradipar-core-api-dev`.
 
 Você atua na camada do Middleware Node.js `aws-server-alef/`, a ponte que mantém o ecossistema respirando entre APIs complexas do HubSpot e um sistema on-premise Sankhya que usa XML e ISO-8859-1.
 
