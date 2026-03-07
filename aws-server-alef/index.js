@@ -2008,13 +2008,19 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
       });
     }
 
-    // Se nÃ£o for rentÃ¡vel e nÃ£o forÃ§ar confirmaÃ§Ã£o, bloquear
-    if (!profitability.isRentavel && !forceConfirm) {
-      return res.status(400).json({
-        success: false,
-        error: "OrÃ§amento nÃ£o Ã© rentÃ¡vel (lucro negativo)",
+    // Fase 35: isRentavel agora é condição de roteamento, não bloqueio.
+    // O front-end usa needsRelease para decidir o fluxo de sub-etapas no Step 3.
+    const needsRelease = !profitability.isRentavel;
+    console.log(`[CONFIRM-QUOTE] needsRelease=${needsRelease}, lucro=${profitability.lucro}, minimo=${profitability.minimo}`);
+
+    // Se precisa liberação e NÃO veio forceConfirm, retornar info (não bloqueia com 400)
+    if (needsRelease && !forceConfirm) {
+      return res.json({
+        success: true,
+        confirmed: false,
+        needsRelease: true,
         profitability,
-        requiresApproval: true
+        message: "Liberação necessária antes de confirmar. Lucro abaixo do mínimo permitido."
       });
     }
 
@@ -2044,7 +2050,7 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
 
     console.log(`[CONFIRM-QUOTE] NUNOTA ${nunota} confirmed successfully!`);
 
-    // Extrair o NUNOTA confirmado da resposta (pode ser novo, se foi faturamento)
+    // Extrair o NUNOTA confirmado da resposta (Nro Único — pk.NUNOTA)
     let confirmedNunota = nunota;
     const pkNunota = confirmResp.data?.responseBody?.pk?.NUNOTA;
     if (pkNunota) {
@@ -2052,18 +2058,51 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
     }
     console.log(`[CONFIRM-QUOTE] NUNOTA confirmado pelo Sankhya: ${confirmedNunota} (original: ${nunota})`);
 
-    // 2.2. Atualizar Deal no HubSpot com o NUNOTA confirmado
+    // 2.2. Buscar NRNOTA real (Nro Nota ≠ Nro Único) — correção do bug Fase 35
+    let nrNota = null;
+    try {
+      const nrNotaResp = await postGatewayWithRetry({
+        requestBody: { sql: `SELECT NRNOTA FROM TGFCAB WHERE NUNOTA = ${confirmedNunota}` }
+      });
+      nrNota = nrNotaResp.data?.responseBody?.rows?.[0]?.[0];
+      console.log(`[CONFIRM-QUOTE] NRNOTA (Nro Nota real) = ${nrNota}`);
+    } catch (nrErr) {
+      console.warn(`[CONFIRM-QUOTE] Falha ao buscar NRNOTA: ${nrErr.message}`);
+    }
+
+    // 2.3. Buscar TOP 1010 gerado automaticamente pelo Sankhya após confirmação
+    let nuUnicoPedido = null;
+    try {
+      const pedidoResp = await postGatewayWithRetry({
+        requestBody: {
+          sql: `SELECT NUNOTA FROM TGFCAB WHERE NUNOTAORIG = ${confirmedNunota} AND CODTIPOPER = 1010 ORDER BY NUNOTA DESC`
+        }
+      });
+      nuUnicoPedido = pedidoResp.data?.responseBody?.rows?.[0]?.[0];
+      console.log(`[CONFIRM-QUOTE] Pedido TOP 1010 gerado: NUNOTA = ${nuUnicoPedido}`);
+    } catch (pedErr) {
+      console.warn(`[CONFIRM-QUOTE] Pedido TOP 1010 não encontrado: ${pedErr.message}`);
+    }
+
+    // 2.4. Atualizar Deal no HubSpot com TODAS as propriedades (único PATCH)
     const hsToken = process.env.HUBSPOT_ACCESS_TOKEN;
-    console.log(`[CONFIRM-QUOTE] Salvando sankhya_nunota=${confirmedNunota} no Deal ${dealId}...`);
+    const dealProperties = {
+      sankhya_nunota: (nrNota || confirmedNunota).toString(),
+      dealstage: 'qualifiedtobuy'
+    };
+    if (nuUnicoPedido) {
+      dealProperties.sankhya_nu_unico_pedido = nuUnicoPedido.toString();
+    }
+    console.log(`[CONFIRM-QUOTE] PATCH Deal ${dealId}:`, JSON.stringify(dealProperties));
     try {
       await axios.patch(
         `https://api.hubapi.com/crm/v3/objects/deals/${dealId}`,
-        { properties: { sankhya_nunota: confirmedNunota.toString() } },
+        { properties: dealProperties },
         { headers: { Authorization: `Bearer ${hsToken}` } }
       );
-      console.log(`[CONFIRM-QUOTE] sankhya_nunota atualizado com sucesso no HubSpot!`);
+      console.log(`[CONFIRM-QUOTE] Deal atualizado com sucesso! sankhya_nunota=${dealProperties.sankhya_nunota}, dealstage=qualifiedtobuy, pedido=${nuUnicoPedido || 'N/A'}`);
     } catch (hsError) {
-      console.warn(`[CONFIRM-QUOTE] Falha ao preencher sankhya_nunota: ${hsError.message}`);
+      console.warn(`[CONFIRM-QUOTE] Falha ao atualizar Deal: ${hsError.message}`);
     }
 
     // 3. Gerar PDF automaticamente (usar o NUNOTA confirmado)
@@ -2088,12 +2127,16 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
     res.json({
       success: true,
       nunota: confirmedNunota,
+      nrNota: nrNota || confirmedNunota,
+      nuUnicoPedido: nuUnicoPedido || null,
       originalNunota: nunota,
       dealId,
       confirmed: true,
+      needsRelease: false,
       profitability,
       pdfResult,
-      message: `Orçamento ${confirmedNunota} confirmado com sucesso!${pdfResult?.success ? ' PDF anexado ao Deal.' : ''}`
+      dealstage: 'qualifiedtobuy',
+      message: `Orçamento ${confirmedNunota} confirmado com sucesso!${nuUnicoPedido ? ` Pedido ${nuUnicoPedido} gerado.` : ''}${pdfResult?.success ? ' PDF anexado ao Deal.' : ''}`
     });
 
   } catch (error) {
@@ -2102,6 +2145,517 @@ app.post("/hubspot/confirm-quote", async (req, res) => {
       success: false,
       error: error.message
     });
+  }
+});
+
+// =============================================================================
+// FASE 35: ENDPOINTS DE LIBERAÇÃO (C.2)
+// =============================================================================
+
+/**
+ * Self-Healing Session Wrapper (conforme node-proxy-dev SKILL.md)
+ * Re-autentica automaticamente se a sessão expirou.
+ */
+async function withSankhyaSession(fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e?.response?.status === 401
+      || e?.message?.includes('sessão')
+      || e?.message?.includes('session')
+      || e?.message?.includes('login')
+      || e?.message?.includes('Unauthorized')) {
+      console.log('[SESSION] Re-autenticando automaticamente...');
+      await getAccessToken(true);
+      return await fn();
+    }
+    throw e;
+  }
+}
+
+/**
+ * GET /sankhya/liberacoes/pendentes/:nunota
+ * Busca liberações pendentes de um orçamento
+ */
+app.get("/sankhya/liberacoes/pendentes/:nunota", async (req, res) => {
+  const { nunota } = req.params;
+  try {
+    const result = await withSankhyaSession(async () => {
+      const token = await getAccessToken();
+      const resp = await axios.post(
+        `${baseUrl}/gateway/v1/mgecom/service.sbr?serviceName=GlbConsSolLiberacoesSP.carregarSolicitacoes&outputType=json`,
+        {
+          serviceName: "GlbConsSolLiberacoesSP.carregarSolicitacoes",
+          requestBody: { nunota: { "$": nunota.toString() } }
+        },
+        { headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, timeout: 15000 }
+      );
+      return resp.data;
+    });
+
+    console.log(`[LIBERACOES] Pending for NUNOTA ${nunota}:`, JSON.stringify(result).substring(0, 500));
+
+    if (result.status !== "1") {
+      return res.json({ success: true, pendentes: [], needsRelease: false });
+    }
+
+    // Extrair solicitações do responseBody
+    const solicitacoes = result.responseBody?.solicitacoes?.solicitacao || result.responseBody?.solicitacoes || [];
+    const items = Array.isArray(solicitacoes) ? solicitacoes : [solicitacoes];
+
+    const pendentes = items.map(s => ({
+      codevento: s.CODEVENTO?.$ || s.CODEVENTO,
+      descricao: fixEncoding(s.DESCRCODIGOS?.$ || s.DESCRCODIGOS || s.DESCEVENTO?.$ || s.DESCEVENTO || ''),
+      vlrMinimo: parseFloat(s.VLRMINIMO?.$ || s.VLRMINIMO || 0),
+      vlrAtual: parseFloat(s.VLRATUAL?.$ || s.VLRATUAL || 0),
+      dtalibpend: s.DTALIBPEND?.$ || s.DTALIBPEND || null,
+      codusuliber: s.CODUSULIBER?.$ || s.CODUSULIBER || null
+    }));
+
+    res.json({
+      success: true,
+      nunota,
+      pendentes,
+      needsRelease: pendentes.some(p => !p.dtalibpend),
+      allApproved: pendentes.every(p => !!p.dtalibpend)
+    });
+
+  } catch (error) {
+    console.error(`[LIBERACOES ERROR] ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /sankhya/liberadores/buscar?q=nome&limit=20
+ * Busca usuários do Sankhya que podem ser liberadores
+ */
+app.get("/sankhya/liberadores/buscar", async (req, res) => {
+  const { q, limit = 20 } = req.query;
+  try {
+    const result = await withSankhyaSession(async () => {
+      // Usar SQL direto via postGatewayWithRetry para buscar usuários
+      const whereClause = q ? `WHERE NOMUSU LIKE '%${q}%' AND ATIVO = 'S'` : `WHERE ATIVO = 'S'`;
+      const resp = await postGatewayWithRetry({
+        requestBody: {
+          sql: `SELECT CODUSU, NOMUSU, CODGRUPO, EMAIL FROM TGFUSU ${whereClause} ORDER BY NOMUSU FETCH FIRST ${limit} ROWS ONLY`
+        }
+      });
+      return resp.data;
+    });
+
+    const rows = result?.responseBody?.rows || [];
+    const liberadores = rows.map(row => ({
+      codusu: row[0],
+      nome: fixEncoding(String(row[1] || '')),
+      codgrupo: row[2],
+      email: row[3] || ''
+    }));
+
+    console.log(`[LIBERADORES] Found ${liberadores.length} users matching "${q || '*'}"`);
+    res.json({ success: true, liberadores });
+
+  } catch (error) {
+    console.error(`[LIBERADORES ERROR] ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /sankhya/liberacoes/definir
+ * Define o liberador para uma solicitação pendente
+ * Body: { nunota, codusuLiber, codevento }
+ */
+app.post("/sankhya/liberacoes/definir", async (req, res) => {
+  const { nunota, codusuLiber, codevento } = req.body;
+
+  if (!nunota || !codusuLiber || !codevento) {
+    return res.status(400).json({ success: false, error: "nunota, codusuLiber e codevento são obrigatórios" });
+  }
+
+  try {
+    const result = await withSankhyaSession(async () => {
+      const token = await getAccessToken();
+      const resp = await axios.post(
+        `${baseUrl}/gateway/v1/mgecom/service.sbr?serviceName=GlbConsSolLiberacoesSP.salvarSolicitacoes&outputType=json`,
+        {
+          serviceName: "GlbConsSolLiberacoesSP.salvarSolicitacoes",
+          requestBody: {
+            solicitacoes: {
+              solicitacao: [{
+                NUNOTA: { "$": nunota.toString() },
+                CODUSULIBER: { "$": codusuLiber.toString() },
+                CODEVENTO: { "$": codevento.toString() }
+              }]
+            }
+          }
+        },
+        { headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, timeout: 15000 }
+      );
+      return resp.data;
+    });
+
+    console.log(`[LIBERACOES] Define liberator response:`, JSON.stringify(result).substring(0, 300));
+
+    if (result.status !== "1") {
+      throw new Error(result.statusMessage || 'Falha ao definir liberador');
+    }
+
+    res.json({
+      success: true,
+      nunota,
+      codusuLiber,
+      codevento,
+      message: `Liberador ${codusuLiber} definido com sucesso para NUNOTA ${nunota}.`
+    });
+
+  } catch (error) {
+    console.error(`[LIBERACOES DEFINIR ERROR] ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /sankhya/liberacoes/status/:nunota
+ * Verifica se as liberações foram aprovadas (DTALIBPEND preenchido)
+ */
+app.get("/sankhya/liberacoes/status/:nunota", async (req, res) => {
+  const { nunota } = req.params;
+  try {
+    const result = await withSankhyaSession(async () => {
+      const token = await getAccessToken();
+      const resp = await axios.post(
+        `${baseUrl}/gateway/v1/mgecom/service.sbr?serviceName=GlbConsSolLiberacoesSP.carregarSolicitacoes&outputType=json`,
+        {
+          serviceName: "GlbConsSolLiberacoesSP.carregarSolicitacoes",
+          requestBody: { nunota: { "$": nunota.toString() } }
+        },
+        { headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, timeout: 10000 }
+      );
+      return resp.data;
+    });
+
+    if (result.status !== "1") {
+      return res.json({ success: true, approved: false, dtalibpend: null });
+    }
+
+    const solicitacoes = result.responseBody?.solicitacoes?.solicitacao || result.responseBody?.solicitacoes || [];
+    const items = Array.isArray(solicitacoes) ? solicitacoes : [solicitacoes];
+
+    const allApproved = items.length > 0 && items.every(s => {
+      const dt = s.DTALIBPEND?.$ || s.DTALIBPEND;
+      return dt !== null && dt !== undefined && dt !== '';
+    });
+
+    const firstApproval = items.find(s => s.DTALIBPEND?.$ || s.DTALIBPEND);
+    const dtalibpend = firstApproval ? (firstApproval.DTALIBPEND?.$ || firstApproval.DTALIBPEND) : null;
+
+    console.log(`[LIBERACOES STATUS] NUNOTA ${nunota}: approved=${allApproved}, dtalibpend=${dtalibpend}`);
+
+    res.json({
+      success: true,
+      nunota,
+      approved: allApproved,
+      dtalibpend,
+      pendingCount: items.filter(s => !(s.DTALIBPEND?.$ || s.DTALIBPEND)).length
+    });
+
+  } catch (error) {
+    console.error(`[LIBERACOES STATUS ERROR] ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// =============================================================================
+// FASE 35: ENDPOINTS DE PEDIDO - TOP 1010 (C.3)
+// =============================================================================
+
+/**
+ * GET /sankhya/pedido/obs/:nunota
+ * Busca a observação interna do pedido
+ */
+app.get("/sankhya/pedido/obs/:nunota", async (req, res) => {
+  const { nunota } = req.params;
+  try {
+    const result = await withSankhyaSession(async () => {
+      return await postGatewayWithRetry({
+        requestBody: { sql: `SELECT OBS FROM TGFCAB WHERE NUNOTA = ${nunota}` }
+      });
+    });
+
+    const obs = result.data?.responseBody?.rows?.[0]?.[0] || null;
+    res.json({ success: true, nunota, obs: fixEncoding(obs), hasObs: !!obs });
+
+  } catch (error) {
+    console.error(`[PEDIDO OBS GET ERROR] ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * PUT /sankhya/pedido/obs/:nunota
+ * Salva a observação interna no pedido via CACSP.salvarCabecalhoNota
+ * Body: { obs }
+ */
+app.put("/sankhya/pedido/obs/:nunota", async (req, res) => {
+  const { nunota } = req.params;
+  const { obs } = req.body;
+
+  if (!obs) {
+    return res.status(400).json({ success: false, error: "obs é obrigatória" });
+  }
+
+  try {
+    const result = await withSankhyaSession(async () => {
+      const token = await getAccessToken();
+      const resp = await axios.post(
+        `${baseUrl}/gateway/v1/mgecom/service.sbr?serviceName=CACSP.salvarCabecalhoNota&outputType=json`,
+        {
+          serviceName: "CACSP.salvarCabecalhoNota",
+          requestBody: {
+            cabecalho: {
+              NUNOTA: { "$": nunota.toString() },
+              OBS: { "$": obs }
+            }
+          }
+        },
+        { headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, timeout: 15000 }
+      );
+      return resp.data;
+    });
+
+    if (result.status !== "1") {
+      throw new Error(result.statusMessage || 'Falha ao salvar obs');
+    }
+
+    console.log(`[PEDIDO OBS] Obs salva com sucesso para NUNOTA ${nunota}`);
+    res.json({ success: true, nunota, message: "Observação salva com sucesso." });
+
+  } catch (error) {
+    console.error(`[PEDIDO OBS PUT ERROR] ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /sankhya/pedido/anexar
+ * Anexa o pedido de compra ao registro TGFCAB (2 etapas conforme API oficial)
+ * Body: { nunota, descricao, fileBase64, fileName }
+ * Etapa 1: sessionUpload.mge (multipart)
+ * Etapa 2: AnexoSistemaSP.salvar (vincular)
+ */
+app.post("/sankhya/pedido/anexar", async (req, res) => {
+  const { nunota, descricao, fileBase64, fileName } = req.body;
+
+  if (!nunota || !fileBase64 || !fileName) {
+    return res.status(400).json({ success: false, error: "nunota, fileBase64 e fileName são obrigatórios" });
+  }
+
+  const sessionKey = `ANEXO_TGFCAB_${nunota}`;
+  const desc = (descricao || 'Pedido Compra').substring(0, 20); // API limita a 20 chars
+
+  try {
+    // ETAPA 1: Upload do arquivo via sessionUpload.mge
+    const token = await getAccessToken();
+    const cleanBase64 = fileBase64.replace(/^data:[^;]+;base64,/, '');
+    const fileBuffer = Buffer.from(cleanBase64, 'base64');
+
+    const FormData = (await import('form-data')).default;
+    const formData = new FormData();
+    formData.append('arquivo', fileBuffer, { filename: fileName });
+
+    console.log(`[PEDIDO ANEXAR] Etapa 1: Upload de ${fileName} (${fileBuffer.length} bytes) - sessionKey=${sessionKey}...`);
+
+    const uploadResp = await axios.post(
+      `${baseUrl}/gateway/v1/mge/sessionUpload.mge?sessionkey=${sessionKey}&fitem=N&salvar=S&useCache=N`,
+      formData,
+      {
+        headers: {
+          ...formData.getHeaders(),
+          "Authorization": `Bearer ${token}`,
+          "Accept": "text/html"
+        },
+        timeout: 30000,
+        maxContentLength: 5 * 1024 * 1024
+      }
+    );
+
+    console.log(`[PEDIDO ANEXAR] Etapa 1 concluída. Status: ${uploadResp.status}`);
+
+    // ETAPA 2: Vincular ao registro TGFCAB via AnexoSistemaSP.salvar
+    console.log(`[PEDIDO ANEXAR] Etapa 2: Vinculando ${fileName} ao NUNOTA ${nunota}...`);
+
+    const salvarResp = await axios.post(
+      `${baseUrl}/gateway/v1/mge/service.sbr?serviceName=AnexoSistemaSP.salvar&outputType=json`,
+      {
+        serviceName: "AnexoSistemaSP.salvar",
+        requestBody: {
+          params: {
+            pkEntity: nunota.toString(),
+            keySession: sessionKey,
+            nameEntity: "CabecalhoNota",
+            description: desc,
+            keyAttach: "",
+            typeAcess: "ALL",
+            typeApres: "GLO",
+            nuAttach: "",
+            nameAttach: fileName,
+            fileSelect: 1,
+            oldFile: ""
+          }
+        }
+      },
+      { headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, timeout: 15000 }
+    );
+
+    console.log(`[PEDIDO ANEXAR] Etapa 2 resposta:`, JSON.stringify(salvarResp.data).substring(0, 300));
+
+    if (salvarResp.data.status !== "1") {
+      throw new Error(salvarResp.data.statusMessage || 'Falha ao vincular anexo');
+    }
+
+    res.json({
+      success: true,
+      nunota,
+      fileName,
+      sessionKey,
+      message: `Arquivo "${fileName}" anexado com sucesso ao NUNOTA ${nunota}.`
+    });
+
+  } catch (error) {
+    console.error(`[PEDIDO ANEXAR ERROR] ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /sankhya/pedido/confirmar/:nunota
+ * Confirma o pedido TOP 1010 via CACSP.confirmarNota com SUBSTITUIRDATA=N
+ * Body: { dealId }
+ */
+app.post("/sankhya/pedido/confirmar/:nunota", async (req, res) => {
+  const { nunota } = req.params;
+  const { dealId } = req.body;
+
+  if (!nunota || !dealId) {
+    return res.status(400).json({ success: false, error: "nunota e dealId são obrigatórios" });
+  }
+
+  try {
+    console.log(`[PEDIDO CONFIRMAR] Confirmando pedido NUNOTA ${nunota} (TOP 1010)...`);
+
+    const result = await withSankhyaSession(async () => {
+      const token = await getAccessToken();
+      const resp = await axios.post(
+        `${baseUrl}/gateway/v1/mgecom/service.sbr?serviceName=CACSP.confirmarNota&outputType=json`,
+        {
+          serviceName: "CACSP.confirmarNota",
+          requestBody: {
+            nota: { NUNOTA: { "$": nunota.toString() } },
+            novaDataNeg: { SUBSTITUIRDATA: { "$": "N" } }
+          }
+        },
+        { headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, timeout: 30000 }
+      );
+      return resp.data;
+    });
+
+    console.log(`[PEDIDO CONFIRMAR] Response:`, JSON.stringify(result).substring(0, 500));
+
+    if (result.status !== "1") {
+      throw new Error(result.statusMessage || 'Falha ao confirmar pedido');
+    }
+
+    // Buscar NRNOTA do pedido confirmado
+    let nrNotaPedido = null;
+    try {
+      const nrResp = await postGatewayWithRetry({
+        requestBody: { sql: `SELECT NRNOTA FROM TGFCAB WHERE NUNOTA = ${nunota}` }
+      });
+      nrNotaPedido = nrResp.data?.responseBody?.rows?.[0]?.[0];
+      console.log(`[PEDIDO CONFIRMAR] NRNOTA do pedido = ${nrNotaPedido}`);
+    } catch (nrErr) {
+      console.warn(`[PEDIDO CONFIRMAR] Falha ao buscar NRNOTA: ${nrErr.message}`);
+    }
+
+    // Atualizar Deal no HubSpot: sankhya_nu_nota_pedido + dealstage=presentationscheduled
+    const hsToken = process.env.HUBSPOT_ACCESS_TOKEN;
+    const dealProps = {
+      sankhya_nu_nota_pedido: (nrNotaPedido || nunota).toString(),
+      dealstage: 'presentationscheduled'
+    };
+    try {
+      await axios.patch(
+        `https://api.hubapi.com/crm/v3/objects/deals/${dealId}`,
+        { properties: dealProps },
+        { headers: { Authorization: `Bearer ${hsToken}` } }
+      );
+      console.log(`[PEDIDO CONFIRMAR] Deal ${dealId} atualizado: dealstage=presentationscheduled, nrNotaPedido=${dealProps.sankhya_nu_nota_pedido}`);
+    } catch (hsErr) {
+      console.warn(`[PEDIDO CONFIRMAR] Falha ao atualizar Deal: ${hsErr.message}`);
+    }
+
+    // Gerar PDF do pedido e anexar ao Deal
+    let pdfResult = null;
+    try {
+      const pdfData = await generateSankhyaPDF(nunota);
+      const { fileId, url } = await uploadPDFToHubSpot(pdfData.fileName, pdfData.base64);
+      await createNoteWithPDFAttachment(dealId, fileId, nunota);
+      pdfResult = { success: true, fileId, url };
+      console.log(`[PEDIDO CONFIRMAR] PDF do pedido anexado ao Deal!`);
+    } catch (pdfErr) {
+      console.warn(`[PEDIDO CONFIRMAR] PDF falhou: ${pdfErr.message}`);
+      pdfResult = { success: false, error: pdfErr.message };
+    }
+
+    res.json({
+      success: true,
+      nunota,
+      nrNotaPedido: nrNotaPedido || nunota,
+      dealId,
+      dealstage: 'presentationscheduled',
+      pdfResult,
+      message: `Pedido ${nunota} confirmado com sucesso!${pdfResult?.success ? ' PDF anexado.' : ''}`
+    });
+
+  } catch (error) {
+    console.error(`[PEDIDO CONFIRMAR ERROR] ${error.message}`);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// =============================================================================
+// FASE 35: ENDPOINT DE ATUALIZAÇÃO DE PIPELINE (C.4)
+// =============================================================================
+
+/**
+ * POST /hubspot/deal/properties
+ * Atualiza propriedades e dealstage do Deal num único PATCH
+ * Body: { dealId, properties: { dealstage, sankhya_nu_unico_pedido, ... } }
+ */
+app.post("/hubspot/deal/properties", async (req, res) => {
+  const { dealId, properties } = req.body;
+
+  if (!dealId || !properties) {
+    return res.status(400).json({ success: false, error: "dealId e properties são obrigatórios" });
+  }
+
+  try {
+    const hsToken = process.env.HUBSPOT_ACCESS_TOKEN;
+    console.log(`[DEAL PROPS] Atualizando Deal ${dealId}:`, JSON.stringify(properties));
+
+    await axios.patch(
+      `https://api.hubapi.com/crm/v3/objects/deals/${dealId}`,
+      { properties },
+      { headers: { Authorization: `Bearer ${hsToken}` } }
+    );
+
+    console.log(`[DEAL PROPS] Deal ${dealId} atualizado com sucesso!`);
+    res.json({ success: true, dealId, properties, message: "Deal atualizado com sucesso." });
+
+  } catch (error) {
+    console.error(`[DEAL PROPS ERROR] ${error.message}`);
+    res.status(500).json({ success: false, error: error.response?.data?.message || error.message });
   }
 });
 
@@ -2540,20 +3094,6 @@ app.post("/hubspot/generate-header", async (req, res) => {
             OBSERVACAO: { "$": props.observacao || "" },
             AD_OBSFRETE: { "$": props.observacao_frete || "" },
             AD_OBSERVACAOINTERNA: { "$": props.observacao_interna || "" }
-          },
-          itens: {
-            item: productItems.map((item, index) => ({
-              NUNOTA: { "$": "" },
-              SEQUENCIA: { "$": index + 1 },
-              CODEMP: { "$": codEmp },
-              CODPROD: { "$": item.codProd },
-              CODVOL: { "$": item.codVol },
-              CODLOCALORIG: { "$": 0 },
-              CONTROLE: { "$": item.controle },
-              QTDNEG: { "$": item.qtdNeg },
-              VLRUNIT: { "$": item.vlrUnit },
-              VLRTOT: { "$": item.vlrTot }
-            }))
           }
         }
       }

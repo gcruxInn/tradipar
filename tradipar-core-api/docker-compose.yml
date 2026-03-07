@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  core-api:
+    build: .
+    container_name: core-api-sankhya
+    restart: unless-stopped
+    ports:
+      - "3005:3000"
+    env_file:
+      - .env
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -229,6 +229,23 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
     const [duplicatingItemId, setDuplicatingItemId] = useState<string | null>(null);
 
+    // Fase 35: Checkout Sub-steps State
+    const [checkoutSubStep, setCheckoutSubStep] = useState(0);
+    const [releaseUsers, setReleaseUsers] = useState<{ codusu: number, nome: string, codgrupo?: number, email?: string }[]>([]);
+    const [selectedReleaseUser, setSelectedReleaseUser] = useState<number | null>(null);
+    const [releasePolling, setReleasePolling] = useState(false);
+    const [releaseApproved, setReleaseApproved] = useState(false);
+    const [releaseLoading, setReleaseLoading] = useState(false);
+    const [releaseEvents, setReleaseEvents] = useState<any[]>([]);
+    const [pedidoNuUnico, setPedidoNuUnico] = useState<string | null>(null);
+    const [obsInterna, setObsInterna] = useState('');
+    const [pedidoAnexoName, setPedidoAnexoName] = useState<string | null>(null);
+    const [pedidoAnexoBase64, setPedidoAnexoBase64] = useState<string | null>(null);
+    const [checkoutLoading, setCheckoutLoading] = useState(false);
+    const [checkoutMessage, setCheckoutMessage] = useState<string | null>(null);
+    const [checkoutError, setCheckoutError] = useState<string | null>(null);
+    const releaseIntervalRef = useRef<any>(null);
+
     // Add Item State
     const [searchTerm, setSearchTerm] = useState("");
     const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -743,7 +760,17 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 method: "POST", body: { dealId: context.crm.objectId }
             });
             const res = await resp.json();
-            if (res.success) { fetchPrices(); fetchQuoteStatus(); onRefreshProperties(); }
+            if (res.success) {
+                // Ao criar a capa do orçamento, forçar uma sincronização para popular os itens
+                if (res.nunota) {
+                    await hubspot.fetch("https://api.gcrux.com/hubspot/sync-quote-items", {
+                        method: "POST", body: { dealId: context.crm.objectId, nunota: res.nunota }
+                    }).catch(console.error);
+                }
+                fetchPrices();
+                fetchQuoteStatus();
+                onRefreshProperties();
+            }
             else setError(res.error);
         } catch (e: any) { setError(e.message); }
         finally { setLoading(false); }
@@ -829,7 +856,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                             <Flex gap="sm">
                                 {isConfirmed && <Tag variant="success">✅ Confirmado</Tag>}
                                 {!isConfirmed && hasBudget && <Tag variant="warning">⏳ Em Negociação</Tag>}
-                                {!hasBudget && <Tag variant="danger">⚠️ Sem Orçamento</Tag>}
+                                {!hasBudget && <Tag variant="error">⚠️ Sem Orçamento</Tag>}
                             </Flex>
                         </Flex>
 
@@ -927,10 +954,14 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 fetchPrices();
                 fetchQuoteStatus(); // Atualiza Análise de Rentabilidade
             } else {
+                const errorMessage = res.message || res.error || "Erro na sincronização.";
+                const details = res.errors ? ` Detalhes: ${res.errors.join(" | ")}` : "";
+                const finalMessage = errorMessage + details;
+
                 if (!silent) {
-                    setSyncResult({ success: false, message: res.error || "Erro na sincronização." });
+                    setSyncResult({ success: false, message: finalMessage });
                 } else {
-                    actions.addAlert({ type: "danger", title: "Erro na sincronização automática", message: res.error || "Erro ao sincronizar com ERP." });
+                    actions.addAlert({ type: "warning", title: "Erro na sincronização automática", message: finalMessage });
                 }
             }
         } catch (e: any) {
@@ -986,11 +1017,12 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                             <Table>
                                 <TableHead>
                                     <TableRow>
-                                        <TableHeader width="auto">Ações</TableHeader>
+                                        <TableHeader width={50}>Ações</TableHeader>
                                         <TableHeader width={100}>Qtd</TableHeader>
                                         <TableHeader width="auto">Produto</TableHeader>
                                         <TableHeader width="auto">Lote</TableHeader>
                                         <TableHeader width="auto">Preço</TableHeader>
+                                        <TableHeader width="auto">Rentab.</TableHeader>
                                     </TableRow>
                                 </TableHead>
                                 <TableBody>
@@ -1004,13 +1036,13 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                     {data?.items?.map(item => (
                                         <TableRow key={item.id}>
                                             <TableCell>
-                                                <Dropdown buttonText="Opções" variant="secondary" buttonSize="xs">
+                                                <Dropdown buttonText="⚙" variant="secondary" buttonSize="xs">
                                                     <Dropdown.ButtonItem onClick={() => handleViewRentabilidade(item)}>📊 Ver Rentabilidade</Dropdown.ButtonItem>
                                                     <Dropdown.ButtonItem onClick={() => handleDuplicateItem(item.id)}>📑 Duplicar</Dropdown.ButtonItem>
                                                     <Dropdown.ButtonItem onClick={() => handleDeleteItem(item.id)}>🗑️ Excluir</Dropdown.ButtonItem>
                                                 </Dropdown>
                                             </TableCell>
-                                            <TableCell>
+                                            <TableCell width={200}>
                                                 <NumberInput
                                                     label=""
                                                     name={`q-${item.id}`}
@@ -1108,11 +1140,25 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                                             else if (val === "pv3") handleApplyItemPrice(item.id, item.prices.pv3 || 0);
                                                             else if (val === "edit_custom") {
                                                                 setCustomPriceItemId(item.id);
-                                                                setCustomPriceValue(selectedPrices[item.id] || (item.currentPrice ? item.currentPrice * item.quantity : 0));
+                                                                const itemTotal = selectedPrices[item.id] !== undefined ? selectedPrices[item.id] : (item.currentPrice ? item.currentPrice * item.quantity : 0);
+                                                                setCustomPriceValue(item.quantity > 0 ? itemTotal / item.quantity : itemTotal);
                                                             }
                                                         }}
                                                     />
                                                 )}
+                                            </TableCell>
+                                            <TableCell>
+                                                {(() => {
+                                                    const rentab = optimisticProfitabilities[item.id] !== undefined ? optimisticProfitabilities[item.id] : item.sankhyaProfitability;
+                                                    if (rentab === undefined) {
+                                                        return <Tag variant="default">⚠️ Pendente</Tag>;
+                                                    }
+                                                    return (
+                                                        <Tag variant={rentab >= 0 ? "success" : "error"}>
+                                                            {rentab >= 0 ? "✅" : "⚠️"} {rentab.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%
+                                                        </Tag>
+                                                    );
+                                                })()}
                                             </TableCell>
                                         </TableRow>
                                     ))}
@@ -1191,16 +1237,22 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 </Tabs>
 
                 {quoteStatus?.profitability && !quoteStatus.profitability.isRentavel && (
-                    <Alert title="Negócio com Prejuízo" variant="error">
-                        Atenção: Você deve ajustar os preços ou quantidades. O orçamento atual apresenta prejuízo financeiro e está bloqueado para fechamento.
+                    <Alert title="Atenção: Liberação Necessária" variant="warning">
+                        Este orçamento apresenta lucro abaixo do mínimo permitido ({formatCurrency(quoteStatus.profitability.lucro)} / mínimo: {formatPercent(quoteStatus.profitability.percentLucro)}).
+                        Será necessário solicitar liberação de um responsável antes de confirmar. Você pode avançar para o passo de fechamento e seguir as instruções.
                     </Alert>
                 )}
                 <Flex gap="sm" justify="between">
                     <Button onClick={() => setCurrentStep(0)} variant="secondary">&larr; Voltar para Conexão</Button>
                     <Button
-                        onClick={() => setCurrentStep(2)}
+                        onClick={() => {
+                            const needsRelease = quoteStatus?.profitability && !quoteStatus.profitability.isRentavel;
+                            setCheckoutSubStep(needsRelease ? 0 : 1);
+                            setCheckoutError(null);
+                            setCheckoutMessage(null);
+                            setCurrentStep(2);
+                        }}
                         variant="primary"
-                        disabled={quoteStatus?.profitability && !quoteStatus.profitability.isRentavel}
                     >
                         Ir para Fechamento &rarr;
                     </Button>
@@ -1209,11 +1261,190 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         );
     };
 
-    // --- STEP 3: FECHAMENTO (Checkout) ---
+    // Cleanup release polling on unmount
+    useEffect(() => {
+        return () => {
+            if (releaseIntervalRef.current) clearInterval(releaseIntervalRef.current);
+        };
+    }, []);
+
+    // --- STEP 3: FECHAMENTO (Checkout) --- Fase 35: Sub-etapas guiadas
     const renderStep3 = () => {
         const isConfirmed = quoteStatus?.isConfirmed;
         const profitability = quoteStatus?.profitability;
         const qtdItens = data?.items?.length || 0;
+        const needsRelease = profitability && !profitability.isRentavel;
+
+        // === Helper: Fetch liberadores ===
+        const fetchLiberadores = async (searchQuery = '') => {
+            try {
+                const qs = searchQuery ? `?q=${encodeURIComponent(searchQuery)}&limit=20` : '?limit=20';
+                const resp = await hubspot.fetch(`https://api.gcrux.com/sankhya/liberadores/buscar${qs}`, { method: "GET" });
+                const res = await resp.json();
+                if (res.success) setReleaseUsers(res.liberadores || []);
+            } catch (e: any) {
+                console.warn('[LIBERADORES] Fetch failed:', e.message);
+            }
+        };
+
+        // === Helper: Check release events ===
+        const fetchReleaseEvents = async () => {
+            if (!quoteStatus?.nunota) return;
+            try {
+                const resp = await hubspot.fetch(`https://api.gcrux.com/sankhya/liberacoes/pendentes/${quoteStatus.nunota}`, { method: "GET" });
+                const res = await resp.json();
+                if (res.success) {
+                    setReleaseEvents(res.pendentes || []);
+                    if (res.allApproved) {
+                        setReleaseApproved(true);
+                        setReleasePolling(false);
+                        if (releaseIntervalRef.current) clearInterval(releaseIntervalRef.current);
+                        setCheckoutMessage('Liberação aprovada! Avançando...');
+                        setTimeout(() => setCheckoutSubStep(1), 1500);
+                    }
+                }
+            } catch (e: any) {
+                console.warn('[RELEASE STATUS] Check failed:', e.message);
+            }
+        };
+
+        // === Helper: Request release ===
+        const handleRequestRelease = async () => {
+            if (!selectedReleaseUser || !quoteStatus?.nunota || releaseEvents.length === 0) return;
+            setReleaseLoading(true);
+            setCheckoutError(null);
+            try {
+                const evento = releaseEvents[0];
+                const resp = await hubspot.fetch('https://api.gcrux.com/sankhya/liberacoes/definir', {
+                    method: "POST",
+                    body: {
+                        nunota: quoteStatus.nunota,
+                        codusuLiber: selectedReleaseUser,
+                        codevento: evento.codevento
+                    }
+                });
+                const res = await resp.json();
+                if (res.success) {
+                    setCheckoutMessage('Liberação solicitada! Aguardando aprovação...');
+                    setReleasePolling(true);
+                    // Start polling every 30s
+                    releaseIntervalRef.current = setInterval(fetchReleaseEvents, 30000);
+                } else {
+                    throw new Error(res.error);
+                }
+            } catch (e: any) {
+                setCheckoutError(e.message);
+            } finally {
+                setReleaseLoading(false);
+            }
+        };
+
+        // === Helper: Confirm Quote (sub-step 1) ===
+        const handleConfirmQuote = async () => {
+            setCheckoutLoading(true);
+            setCheckoutError(null);
+            try {
+                const body: any = { dealId: context.crm.objectId, nunota: quoteStatus?.nunota };
+                if (needsRelease) body.forceConfirm = true;
+                const resp = await hubspot.fetch('https://api.gcrux.com/hubspot/confirm-quote', { method: "POST", body });
+                const res = await resp.json();
+                if (res.success && res.confirmed) {
+                    setPedidoNuUnico(res.nuUnicoPedido || null);
+                    setCheckoutMessage(res.message);
+                    fetchQuoteStatus();
+                    onRefreshProperties();
+                    setTimeout(() => setCheckoutSubStep(2), 1500);
+                } else if (res.success && res.needsRelease) {
+                    // Server says needs release
+                    setCheckoutSubStep(0);
+                    await fetchReleaseEvents();
+                    await fetchLiberadores();
+                } else {
+                    throw new Error(res.error || 'Falha na confirmação');
+                }
+            } catch (e: any) {
+                setCheckoutError(e.message);
+            } finally {
+                setCheckoutLoading(false);
+            }
+        };
+
+        // === Helper: Save obs + attach file (sub-step 2) ===
+        const handlePrepareOrder = async () => {
+            if (!obsInterna.trim()) {
+                setCheckoutError('Observação interna é obrigatória.');
+                return;
+            }
+            const nunotaPedido = pedidoNuUnico || quoteStatus?.nunota;
+            if (!nunotaPedido) return;
+
+            setCheckoutLoading(true);
+            setCheckoutError(null);
+            try {
+                // 1. Save obs
+                const obsResp = await hubspot.fetch(`https://api.gcrux.com/sankhya/pedido/obs/${nunotaPedido}`, {
+                    method: "PUT",
+                    body: { obs: obsInterna }
+                });
+                const obsRes = await obsResp.json();
+                if (!obsRes.success) throw new Error(obsRes.error || 'Falha ao salvar obs');
+
+                // 2. Attach file if provided
+                if (pedidoAnexoBase64 && pedidoAnexoName) {
+                    const anexoResp = await hubspot.fetch('https://api.gcrux.com/sankhya/pedido/anexar', {
+                        method: "POST",
+                        body: {
+                            nunota: nunotaPedido,
+                            descricao: 'Pedido Compra',
+                            fileBase64: pedidoAnexoBase64,
+                            fileName: pedidoAnexoName
+                        }
+                    });
+                    const anexoRes = await anexoResp.json();
+                    if (!anexoRes.success) throw new Error(anexoRes.error || 'Falha ao anexar arquivo');
+                }
+
+                setCheckoutMessage('Observação salva' + (pedidoAnexoName ? ' e arquivo anexado' : '') + ' com sucesso!');
+                setTimeout(() => setCheckoutSubStep(3), 1500);
+            } catch (e: any) {
+                setCheckoutError(e.message);
+            } finally {
+                setCheckoutLoading(false);
+            }
+        };
+
+        // === Helper: Confirm Order (sub-step 3) ===
+        const handleConfirmOrder = async () => {
+            const nunotaPedido = pedidoNuUnico || quoteStatus?.nunota;
+            if (!nunotaPedido) return;
+
+            setCheckoutLoading(true);
+            setCheckoutError(null);
+            try {
+                const resp = await hubspot.fetch(`https://api.gcrux.com/sankhya/pedido/confirmar/${nunotaPedido}`, {
+                    method: "POST",
+                    body: { dealId: context.crm.objectId }
+                });
+                const res = await resp.json();
+                if (res.success) {
+                    setCheckoutMessage(res.message);
+                    fetchQuoteStatus();
+                    onRefreshProperties();
+                } else {
+                    throw new Error(res.error || 'Falha ao confirmar pedido');
+                }
+            } catch (e: any) {
+                setCheckoutError(e.message);
+            } finally {
+                setCheckoutLoading(false);
+            }
+        };
+
+        // === Sub-step labels ===
+        const subStepNames = needsRelease
+            ? ['Liberação', 'Confirmar Orçamento', 'Preparar Pedido', 'Confirmar Pedido']
+            : ['Confirmar Orçamento', 'Preparar Pedido', 'Confirmar Pedido'];
+        const displaySubStep = needsRelease ? checkoutSubStep : checkoutSubStep - 1;
 
         return (
             <Flex direction="column" gap="md">
@@ -1291,70 +1522,200 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                             </Flex>
 
                         ) : (
-                            /* === ESTADO: PENDENTE DE CONFIRMAÇÃO === */
-                            <Flex direction="column" gap="md" align="center">
-                                <Heading>📋 Resumo do Negócio</Heading>
+                            /* === ESTADO: FLUXO DE SUB-ETAPAS === */
+                            <Flex direction="column" gap="md">
+                                <Flex justify="between" align="center">
+                                    <Heading>📋 Fechamento</Heading>
+                                    <Text variant="microcopy">NUNOTA: #{quoteStatus?.nunota || '—'}</Text>
+                                </Flex>
+
+                                <StepIndicator
+                                    currentStep={Math.max(0, displaySubStep)}
+                                    stepNames={subStepNames}
+                                />
+
                                 <Divider />
 
-                                {/* Totais */}
-                                <Flex gap="xl" justify="center" wrap="wrap">
+                                {/* Totais resumidos */}
+                                <Flex direction="row" gap="xl" justify="center" align="center">
                                     <Flex direction="column" align="center">
-                                        <Text variant="microcopy">Total Calculado (Itens)</Text>
-                                        <Heading>{formatCurrency(amount || 0)}</Heading>
-                                    </Flex>
-                                    <Flex direction="column" align="center">
-                                        <Text variant="microcopy">Nro. Único Sankhya</Text>
-                                        <Heading>#{quoteStatus?.nunota || '—'}</Heading>
+                                        <Text variant="microcopy">Total</Text>
+                                        <Text format={{ fontWeight: "bold" }}>{formatCurrency(amount || 0)}</Text>
                                     </Flex>
                                     <Flex direction="column" align="center">
                                         <Text variant="microcopy">Itens</Text>
-                                        <Heading>{qtdItens}</Heading>
+                                        <Text format={{ fontWeight: "bold" }}>{qtdItens}</Text>
                                     </Flex>
-                                </Flex>
-
-                                <Divider />
-
-                                {/* Rentabilidade resumida */}
-                                {profitability && (
-                                    <Flex gap="md" wrap="wrap" justify="center">
+                                    {profitability && (
                                         <Flex direction="column" align="center">
-                                            <Text variant="microcopy">Lucro Líquido</Text>
+                                            <Text variant="microcopy">Lucro</Text>
                                             <Tag variant={profitability.isRentavel ? "success" : "error"}>
-                                                {profitability.isRentavel ? "✅" : "❌"} {formatCurrency(profitability.lucro)} ({profitability.percentLucro.toFixed(2)}%)
+                                                {profitability.isRentavel ? "✅" : "⚠️"} {formatCurrency(profitability.lucro)}
                                             </Tag>
                                         </Flex>
-                                        <Flex direction="column" align="center">
-                                            <Text variant="microcopy">Margem Contribuição</Text>
-                                            <Text format={{ fontWeight: "bold" }}>{profitability.percentMC.toFixed(2)}%</Text>
-                                        </Flex>
-                                    </Flex>
-                                )}
-
-                                <Divider />
-
-                                {/* Ações */}
-                                <Flex gap="md" wrap="wrap" justify="center">
-                                    <Button variant="secondary" onClick={() => handleSaveAmount()}>✓ Sincronizar Últimos Valores</Button>
-
-                                    {(quoteStatus?.buttonAction === "CONFIRM_QUOTE" || quoteStatus?.buttonAction === "GENERATE_PDF") && (
-                                        <Button
-                                            variant="primary"
-                                            onClick={handleQuoteAction}
-                                            disabled={quoteLoading}
-                                        >
-                                            {quoteLoading ? "Processando..." : quoteStatus.buttonLabel}
-                                        </Button>
                                     )}
                                 </Flex>
 
-                                {saveSuccess && <Alert title="Sucesso" variant="success">Valores sincronizados com o HubSpot!</Alert>}
-                                {quoteError && <Alert title="Aviso" variant="warning">{quoteError}</Alert>}
-                                {quoteSuccess && <Alert title="Orçamento Confirmado" variant="success">{quoteSuccess}</Alert>}
-                                {quoteStatus?.profitability && !quoteStatus.profitability.isRentavel && (
-                                    <Alert title="Negócio com Prejuízo" variant="error">
-                                        Atenção: O orçamento atual apresenta prejuízo financeiro. Ajuste preços ou quantidades antes de confirmar.
-                                    </Alert>
+                                <Divider />
+
+                                {/* Feedback messages */}
+                                {checkoutError && <Alert title="Erro" variant="danger">{checkoutError}</Alert>}
+                                {checkoutMessage && <Alert title="Info" variant="success">{checkoutMessage}</Alert>}
+
+                                {/* ========== SUB-STEP 0: LIBERAÇÃO ========== */}
+                                {checkoutSubStep === 0 && needsRelease && (
+                                    <Flex direction="column" gap="md">
+                                        <Alert title="Liberação Necessária" variant="warning">
+                                            Lucro atual: {formatCurrency(profitability!.lucro)} — Mínimo exigido: {formatPercent(profitability!.percentLucro)}. É necessário solicitar liberação.
+                                        </Alert>
+
+                                        {releaseEvents.length === 0 && (
+                                            <Button variant="secondary" onClick={fetchReleaseEvents} disabled={releaseLoading}>
+                                                {releaseLoading ? 'Carregando...' : '🔍 Verificar Pendências'}
+                                            </Button>
+                                        )}
+
+                                        {releaseEvents.length > 0 && !releasePolling && !releaseApproved && (
+                                            <Flex direction="column" gap="sm">
+                                                <Text format={{ fontWeight: "bold" }}>Eventos pendentes:</Text>
+                                                {releaseEvents.map((ev, idx) => (
+                                                    <Flex key={idx} gap="sm" align="center">
+                                                        <Tag variant="warning">{ev.descricao || `Evento ${ev.codevento}`}</Tag>
+                                                        <Text variant="microcopy">Min: {ev.vlrMinimo} | Atual: {ev.vlrAtual}</Text>
+                                                    </Flex>
+                                                ))}
+
+                                                <Divider />
+
+                                                <Text format={{ fontWeight: "bold" }}>Selecione o liberador:</Text>
+                                                {releaseUsers.length === 0 && (
+                                                    <Button variant="secondary" size="sm" onClick={() => fetchLiberadores()}>
+                                                        Carregar Liberadores
+                                                    </Button>
+                                                )}
+                                                {releaseUsers.length > 0 && (
+                                                    <Select
+                                                        name="liberador-select"
+                                                        options={releaseUsers.map(u => ({
+                                                            label: u.nome,
+                                                            value: String(u.codusu)
+                                                        }))}
+                                                        value={selectedReleaseUser ? String(selectedReleaseUser) : ''}
+                                                        onChange={(val) => setSelectedReleaseUser(Number(val))}
+                                                        placeholder="Selecione um responsável..."
+                                                    />
+                                                )}
+
+                                                <Button
+                                                    variant="primary"
+                                                    onClick={handleRequestRelease}
+                                                    disabled={!selectedReleaseUser || releaseLoading}
+                                                >
+                                                    {releaseLoading ? 'Solicitando...' : '🔒 Solicitar Liberação'}
+                                                </Button>
+                                            </Flex>
+                                        )}
+
+                                        {releasePolling && !releaseApproved && (
+                                            <Alert title="Aguardando Aprovação" variant="info">
+                                                ⏳ Verificando automaticamente a cada 30 segundos. Aguarde a aprovação do liberador no Sankhya...
+                                            </Alert>
+                                        )}
+
+                                        {releaseApproved && (
+                                            <Alert title="Liberação Aprovada!" variant="success">
+                                                ✅ A liberação foi concedida. Avançando para confirmação do orçamento...
+                                            </Alert>
+                                        )}
+                                    </Flex>
                                 )}
+
+                                {/* ========== SUB-STEP 1: CONFIRMAR ORÇAMENTO ========== */}
+                                {checkoutSubStep === 1 && (
+                                    <Flex direction="column" gap="md" align="center">
+                                        <Text format={{ fontWeight: "bold" }}>Confirmar orçamento TOP 999 no Sankhya ERP</Text>
+                                        <Text variant="microcopy">
+                                            Ao confirmar, o PDF será gerado, a etapa do negócio será atualizada e o pedido TOP 1010 será criado automaticamente.
+                                        </Text>
+
+                                        <Flex gap="md" wrap="wrap" justify="center">
+                                            <Button variant="secondary" onClick={() => handleSaveAmount()}>✓ Sincronizar Valores</Button>
+                                            <Button
+                                                variant="primary"
+                                                onClick={handleConfirmQuote}
+                                                disabled={checkoutLoading}
+                                            >
+                                                {checkoutLoading ? 'Confirmando...' : '✅ Confirmar Orçamento no Sankhya'}
+                                            </Button>
+                                        </Flex>
+
+                                        {saveSuccess && <Alert title="Sucesso" variant="success">Valores sincronizados com o HubSpot!</Alert>}
+                                    </Flex>
+                                )}
+
+                                {/* ========== SUB-STEP 2: PREPARAR PEDIDO ========== */}
+                                {checkoutSubStep === 2 && (
+                                    <Flex direction="column" gap="md">
+                                        <Text format={{ fontWeight: "bold" }}>📋 Preparar Pedido TOP 1010</Text>
+                                        {pedidoNuUnico && (
+                                            <Text variant="microcopy">Pedido gerado: NUNOTA #{pedidoNuUnico}</Text>
+                                        )}
+
+                                        <Divider />
+
+                                        <Input
+                                            label="Observação Interna (obrigatória)"
+                                            name="obs-interna"
+                                            value={obsInterna}
+                                            onChange={(val) => setObsInterna(val)}
+                                            placeholder="Ex.: Referente ao pedido de compra #12345..."
+                                        />
+
+                                        <Divider />
+
+                                        <Text format={{ fontWeight: "bold" }}>📎 Pedido de Compra do Cliente (obrigatório, máx 2MB)</Text>
+                                        {pedidoAnexoName ? (
+                                            <Flex gap="sm" align="center">
+                                                <Tag variant="success">📄 {pedidoAnexoName}</Tag>
+                                                <Button size="xs" variant="secondary" onClick={() => { setPedidoAnexoName(null); setPedidoAnexoBase64(null); }}>
+                                                    ❌ Remover
+                                                </Button>
+                                            </Flex>
+                                        ) : (
+                                            <Alert title="Arquivo necessário" variant="info">
+                                                O pedido de compra do cliente deve ser anexado ao registro no Sankhya antes da confirmação.
+                                                Envie o arquivo via API ou diretamente no Sankhya para prosseguir.
+                                            </Alert>
+                                        )}
+
+                                        <Button
+                                            variant="primary"
+                                            onClick={handlePrepareOrder}
+                                            disabled={checkoutLoading || !obsInterna.trim()}
+                                        >
+                                            {checkoutLoading ? 'Salvando...' : '📤 Enviar OBS e Avançar'}
+                                        </Button>
+                                    </Flex>
+                                )}
+
+                                {/* ========== SUB-STEP 3: CONFIRMAR PEDIDO ========== */}
+                                {checkoutSubStep === 3 && (
+                                    <Flex direction="column" gap="md" align="center">
+                                        <Text format={{ fontWeight: "bold" }}>✅ Confirmar Pedido TOP 1010 no Sankhya</Text>
+                                        <Text variant="microcopy">
+                                            Ao confirmar, o status da nota será atualizado, o PDF será gerado e a etapa do negócio avançará para "Pedido Confirmado".
+                                        </Text>
+
+                                        <Button
+                                            variant="primary"
+                                            onClick={handleConfirmOrder}
+                                            disabled={checkoutLoading}
+                                        >
+                                            {checkoutLoading ? 'Confirmando...' : '✅ Confirmar Pedido no Sankhya'}
+                                        </Button>
+                                    </Flex>
+                                )}
+
                             </Flex>
                         )}
                     </Flex>
