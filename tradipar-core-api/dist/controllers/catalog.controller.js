@@ -37,12 +37,13 @@ class CatalogController {
     // POST /hubspot/prices/deal
     async getDealPrices(req, res) {
         try {
-            const { objectId } = req.body;
-            if (!objectId) {
-                res.status(400).json({ success: false, error: 'objectId é obrigatório' });
+            const { objectId, dealId } = req.body;
+            const id = objectId || dealId;
+            if (!id) {
+                res.status(400).json({ success: false, error: 'objectId ou dealId é obrigatório' });
                 return;
             }
-            const result = await catalog_service_1.catalogService.getDealPrices(objectId);
+            const result = await catalog_service_1.catalogService.getDealPrices(String(id));
             res.json(result);
         }
         catch (error) {

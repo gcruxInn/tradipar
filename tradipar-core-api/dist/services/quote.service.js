@@ -207,29 +207,46 @@ class QuoteService {
         }
     }
     async getQuoteStatus(dealId) {
-        const dealResp = await hubspot_api_1.hubspotApi.get(`/crm/v3/objects/deals/${dealId}?properties=orcamento_sankhya,dealname`);
+        const dealResp = await hubspot_api_1.hubspotApi.get(`/crm/v3/objects/deals/${dealId}?properties=orcamento_sankhya,sankhya_nu_unico_pedido,dealname`);
         const nunota = dealResp.data.properties?.orcamento_sankhya;
         const dealname = dealResp.data.properties?.dealname;
+        const nuUnicoPedido = dealResp.data.properties?.sankhya_nu_unico_pedido;
         if (!nunota) {
             return {
                 success: true,
                 status: {
-                    dealId, dealname, hasQuote: false, nunota: null, isConfirmed: false,
+                    dealId, dealname, hasQuote: false, nunota: null, isConfirmed: false, isOrderConfirmed: false,
                     profitability: null, buttonAction: "CREATE_QUOTE", buttonLabel: "Criar Orçamento"
                 }
             };
         }
-        const notaStatusSql = `SELECT STATUSNOTA, STATUSNFE, VLRNOTA, CONFIRMADA, CODEMP FROM TGFCAB WHERE NUNOTA = ${nunota}`;
+        const notaStatusSql = `SELECT STATUSNOTA, VLRNOTA, PENDENTE, CODEMP, NUMNOTA FROM TGFCAB WHERE NUNOTA = ${nunota}`;
         const notaResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
             serviceName: "DbExplorerSP.executeQuery",
             requestBody: { sql: notaStatusSql }
         });
         const notaRow = notaResp.data?.responseBody?.rows?.[0];
         const statusNota = notaRow?.[0] || "P";
-        const vlrNota = parseFloat(notaRow?.[2]) || 0;
-        const confirmada = notaRow?.[3] || "N";
-        const codemp = notaRow?.[4];
-        const isConfirmed = statusNota !== "P" || confirmada === "S";
+        const vlrNota = parseFloat(notaRow?.[1]) || 0;
+        const pendente = notaRow?.[2] || "S";
+        const codemp = notaRow?.[3];
+        const nrNota = notaRow?.[4];
+        const isConfirmed = statusNota !== "P";
+        let isOrderConfirmed = false;
+        if (nuUnicoPedido) {
+            try {
+                const orderStatusSql = `SELECT STATUSNOTA FROM TGFCAB WHERE NUNOTA = ${nuUnicoPedido}`;
+                const orderResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
+                    serviceName: "DbExplorerSP.executeQuery",
+                    requestBody: { sql: orderStatusSql }
+                });
+                const orderStatusNota = orderResp.data?.responseBody?.rows?.[0]?.[0] || "P";
+                isOrderConfirmed = orderStatusNota !== "P";
+            }
+            catch (e) {
+                console.warn(`[getQuoteStatus] Failed to verify order status for nuUnicoPedido ${nuUnicoPedido}`);
+            }
+        }
         const profResult = await this.getProfitabilityInternal(nunota, codemp);
         const profitability = profResult.profitability;
         const isRentavel = profitability?.isRentavel || false;
@@ -243,9 +260,13 @@ class QuoteService {
             buttonAction = "NEEDS_APPROVAL";
             buttonLabel = "Aguardando Aprovação";
         }
-        else if (statusNota === "L") {
-            buttonAction = "GENERATE_PDF";
-            buttonLabel = "Gerar PDF";
+        else if (statusNota === "L" && !isOrderConfirmed) {
+            buttonAction = "PREPARE_ORDER";
+            buttonLabel = "Preparar Pedido";
+        }
+        else if (statusNota === "L" && isOrderConfirmed) {
+            buttonAction = "VIEW_ORDER";
+            buttonLabel = "Ver Pedido";
         }
         else {
             buttonAction = "VIEW_QUOTE";
@@ -254,8 +275,8 @@ class QuoteService {
         return {
             success: true,
             status: {
-                dealId, dealname, hasQuote: true, nunota: Number(nunota),
-                statusNota, isConfirmed, vlrNota, profitability, profitabilityError,
+                dealId, dealname, hasQuote: true, nunota: Number(nunota), nrNota, nuUnicoPedido,
+                statusNota, isConfirmed, isOrderConfirmed, vlrNota, profitability, profitabilityError,
                 isRentavel, recalc_needed: (profitability && profitability.lucro === 0 && profitability.qtdItens > 0),
                 buttonAction, buttonLabel
             }
@@ -284,7 +305,11 @@ class QuoteService {
             requestBody: { nota: { NUNOTA: { "$": String(nunota) } } }
         });
         if (confirmResp.data.status !== "1") {
-            throw new Error(`Falha ao confirmar nota: ${confirmResp.data.statusMessage || 'Erro desconhecido'}`);
+            const errorMsg = confirmResp.data.statusMessage || 'Erro desconhecido';
+            if (!errorMsg.toLowerCase().includes('já foi confirmada')) {
+                throw new Error(`Falha ao confirmar nota: ${errorMsg}`);
+            }
+            console.log(`[QUOTE CONFIRM] Nota ${nunota} já estava confirmada. Procedendo com a atualização do HubSpot.`);
         }
         let confirmedNunota = nunota;
         const pkNunota = confirmResp.data?.responseBody?.pk?.NUNOTA;
@@ -293,7 +318,7 @@ class QuoteService {
         // Run nrNota and nuUnicoPedido in parallel to speed up
         const [nrNotaResp, pedidoResp] = await Promise.all([
             sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
-                serviceName: "DbExplorerSP.executeQuery", requestBody: { sql: `SELECT NRNOTA FROM TGFCAB WHERE NUNOTA = ${confirmedNunota}` }
+                serviceName: "DbExplorerSP.executeQuery", requestBody: { sql: `SELECT NUMNOTA FROM TGFCAB WHERE NUNOTA = ${confirmedNunota}` }
             }).catch(() => null),
             sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
                 serviceName: "DbExplorerSP.executeQuery", requestBody: { sql: `SELECT NUNOTA FROM TGFCAB WHERE NUNOTAORIG = ${confirmedNunota} AND CODTIPOPER = 1010 ORDER BY NUNOTA DESC` }
@@ -302,6 +327,7 @@ class QuoteService {
         const nrNota = nrNotaResp?.data?.responseBody?.rows?.[0]?.[0] || null;
         const nuUnicoPedido = pedidoResp?.data?.responseBody?.rows?.[0]?.[0] || null;
         const dealProperties = {
+            orcamento_sankhya: String(confirmedNunota),
             sankhya_nunota: String(nrNota || confirmedNunota),
             dealstage: 'qualifiedtobuy'
         };
@@ -340,10 +366,15 @@ class QuoteService {
         return { success: true, fileName: `${fileName}.pdf`, base64: base64Clean };
     }
     async attachPdfToHubspot(dealId, nunota) {
+        console.log(`[HS-ATTACH] Gerando PDF para NUNOTA ${nunota}...`);
         const pdfData = await this.generateSankhyaPDF(nunota);
-        const buffer = Buffer.from(pdfData.base64, 'base64');
+        return this.attachFileToHubspot(dealId, nunota, pdfData.base64, pdfData.fileName);
+    }
+    async attachFileToHubspot(dealId, nunota, base64, fileName) {
+        console.log(`[HS-ATTACH] Iniciando upload de ${fileName} para o Deal ${dealId}...`);
+        const buffer = Buffer.from(base64, 'base64');
         const form = new form_data_1.default();
-        form.append('file', buffer, { filename: pdfData.fileName, contentType: 'application/pdf' });
+        form.append('file', buffer, { filename: fileName, contentType: 'application/pdf' });
         form.append('options', JSON.stringify({ access: 'PRIVATE', overwrite: false }));
         form.append('folderPath', '/Orcamentos');
         const hsUploadResp = await hubspot_api_1.hubspotApi.post('https://api.hubapi.com/files/v3/files', form, {
@@ -351,10 +382,11 @@ class QuoteService {
         });
         const fileId = hsUploadResp.data.id;
         const url = hsUploadResp.data.url;
+        console.log(`[HS-ATTACH] Arquivo ${fileId} ok. Criando nota no Deal ${dealId}...`);
         const notePayload = {
             properties: {
                 hs_timestamp: new Date().toISOString(),
-                hs_note_body: `Orçamento Sankhya #${nunota} anexado automaticamente.`,
+                hs_note_body: `Arquivo Sankhya #${nunota} (${fileName}) anexado automaticamente.`,
                 hs_attachment_ids: String(fileId)
             },
             associations: [{
@@ -370,7 +402,7 @@ class QuoteService {
             fileId,
             fileUrl: url,
             noteId: noteResp.data.id,
-            message: `PDF do orçamento ${nunota} anexado ao Deal ${dealId} com sucesso!`
+            message: `PDF ${nunota} anexado ao Deal ${dealId} com sucesso!`
         };
     }
 }

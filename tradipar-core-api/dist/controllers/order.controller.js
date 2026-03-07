@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.orderController = exports.OrderController = void 0;
 const order_service_1 = require("../services/order.service");
+const quote_service_1 = require("../services/quote.service");
 class OrderController {
     // GET /sankhya/liberacoes/pendentes/:nunota
     async getPendingApprovals(req, res) {
@@ -88,16 +89,46 @@ class OrderController {
     // POST /sankhya/pedido/anexar
     async attachFileToOrder(req, res) {
         try {
-            const { nunota, descricao, fileBase64, fileName } = req.body;
+            const { nunota, descricao, fileBase64, fileName, dealId } = req.body;
             if (!nunota || !fileBase64 || !fileName) {
                 res.status(400).json({ success: false, error: "nunota, fileBase64 e fileName são obrigatórios" });
                 return;
             }
             const result = await order_service_1.orderService.attachFileToOrder(nunota, fileBase64, fileName, descricao);
+            // Sincronizar com HubSpot se dealId for fornecido
+            if (dealId) {
+                try {
+                    await quote_service_1.quoteService.attachFileToHubspot(dealId, nunota, fileBase64, fileName);
+                }
+                catch (hsErr) {
+                    console.warn(`[PEDIDO ANEXAR] Falha ao sincronizar com HubSpot: ${hsErr.message}`);
+                }
+            }
             res.json(result);
         }
         catch (error) {
             console.error(`[PEDIDO ANEXAR ERROR] ${error.message}`);
+            res.status(500).json({ success: false, error: error.message });
+        }
+    }
+    // POST /sankhya/pedido/anexar-pdf
+    async attachGeneratedPdfToOrder(req, res) {
+        try {
+            const { nunotaPedido, nunotaOrcamento, dealId } = req.body;
+            if (!nunotaPedido || !nunotaOrcamento || !dealId) {
+                res.status(400).json({ success: false, error: "nunotaPedido, nunotaOrcamento e dealId são obrigatórios" });
+                return;
+            }
+            // Generate PDF from the quote
+            const pdfResult = await quote_service_1.quoteService.generateSankhyaPDF(nunotaOrcamento);
+            // Attach PDF to Sankhya Order
+            await order_service_1.orderService.attachFileToOrder(nunotaPedido, pdfResult.base64, pdfResult.fileName, 'PDF Orçamento');
+            // Attach PDF to HubSpot Deal
+            await quote_service_1.quoteService.attachPdfToHubspot(dealId, nunotaOrcamento);
+            res.json({ success: true, message: "PDF gerado, anexado ao pedido Sankhya e ao negócio HubSpot com sucesso." });
+        }
+        catch (error) {
+            console.error(`[PEDIDO ANEXAR PDF ERROR] ${error.message}`);
             res.status(500).json({ success: false, error: error.message });
         }
     }
@@ -111,6 +142,14 @@ class OrderController {
                 return;
             }
             const result = await order_service_1.orderService.confirmOrder(nunota, dealId);
+            // Tentar anexar o PDF automaticamente ao HubSpot após confirmação
+            try {
+                console.log(`[PEDIDO CONFIRMAR] Tentando anexar PDF do pedido #${nunota} ao HubSpot...`);
+                await quote_service_1.quoteService.attachPdfToHubspot(dealId, nunota);
+            }
+            catch (pdfErr) {
+                console.warn(`[PEDIDO CONFIRMAR] Falha ao auto-anexar PDF no HubSpot: ${pdfErr.message}`);
+            }
             res.json(result);
         }
         catch (error) {

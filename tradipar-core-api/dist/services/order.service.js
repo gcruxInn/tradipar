@@ -139,15 +139,33 @@ class OrderService {
     async getOrderObs(nunota) {
         const resp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
             serviceName: "DbExplorerSP.executeQuery",
-            requestBody: { sql: `SELECT OBS FROM TGFCAB WHERE NUNOTA = ${nunota}` }
+            requestBody: { sql: `SELECT OBSERVACAO FROM TGFCAB WHERE NUNOTA = ${nunota}` }
         });
         const obs = resp.data?.responseBody?.rows?.[0]?.[0] || null;
         return { success: true, nunota, obs: fixEncoding(obs), hasObs: !!obs };
     }
     async saveOrderObs(nunota, obs) {
-        const resp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mgecom/service.sbr?serviceName=CACSP.salvarCabecalhoNota&outputType=json', {
-            serviceName: "CACSP.salvarCabecalhoNota",
-            requestBody: { cabecalho: { NUNOTA: { "$": nunota.toString() }, OBS: { "$": obs } } }
+        const resp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=CRUDServiceProvider.saveRecord&outputType=json', {
+            serviceName: "CRUDServiceProvider.saveRecord",
+            requestBody: {
+                dataSet: {
+                    rootEntity: "CabecalhoNota",
+                    includePresentationFields: "N",
+                    dataRow: {
+                        localFields: {
+                            OBSERVACAO: { "$": obs }
+                        },
+                        key: {
+                            NUNOTA: { "$": nunota.toString() }
+                        }
+                    },
+                    entity: {
+                        fieldset: {
+                            list: "OBSERVACAO"
+                        }
+                    }
+                }
+            }
         });
         if (resp.data.status !== "1")
             throw new Error(resp.data.statusMessage || 'Falha ao salvar obs');
@@ -155,16 +173,27 @@ class OrderService {
         return { success: true, nunota, message: "Observação salva com sucesso." };
     }
     async attachFileToOrder(nunota, fileBase64, fileName, descricao) {
-        const sessionKey = `ANEXO_TGFCAB_${nunota}`;
+        const timestamp = Date.now().toString().substring(5); // unique digits
+        const sessionKey = `ANEXO_SISTEMA_CabecalhoNota_${nunota}_${timestamp}`;
         const desc = (descricao || 'Pedido Compra').substring(0, 20);
         // ETAPA 1: Upload via sessionUpload.mge
         const cleanBase64 = fileBase64.replace(/^data:[^;]+;base64,/, '');
         const fileBuffer = Buffer.from(cleanBase64, 'base64');
         const FormData = (await Promise.resolve().then(() => __importStar(require('form-data')))).default;
         const formData = new FormData();
-        formData.append('arquivo', fileBuffer, { filename: fileName });
-        console.log(`[PEDIDO ANEXAR] Etapa 1: Upload de ${fileName} (${fileBuffer.length} bytes)...`);
-        await sankhya_api_1.sankhyaApi.post(`/gateway/v1/mge/sessionUpload.mge?sessionkey=${sessionKey}&fitem=N&salvar=S&useCache=N`, formData, { headers: { ...formData.getHeaders(), "Accept": "text/html" }, timeout: 30000, maxContentLength: 5 * 1024 * 1024 });
+        formData.append('arquivo', fileBuffer, { filename: fileName, knownLength: fileBuffer.length });
+        const contentLength = formData.getLengthSync();
+        console.log(`[PEDIDO ANEXAR] Etapa 1: Upload de ${fileName} (${fileBuffer.length} bytes, CL: ${contentLength})...`);
+        await sankhya_api_1.sankhyaApi.post(`/gateway/v1/mge/sessionUpload.mge?sessionkey=${sessionKey}&fitem=S&salvar=S&useCache=N`, formData, {
+            headers: {
+                ...formData.getHeaders(),
+                "Content-Length": contentLength,
+                "Accept": "application/json"
+            },
+            timeout: 30000,
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity
+        });
         // ETAPA 2: Vincular via AnexoSistemaSP.salvar
         console.log(`[PEDIDO ANEXAR] Etapa 2: Vinculando ${fileName} ao NUNOTA ${nunota}...`);
         const salvarResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=AnexoSistemaSP.salvar&outputType=json', {
@@ -197,7 +226,7 @@ class OrderService {
         try {
             const nrResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
                 serviceName: "DbExplorerSP.executeQuery",
-                requestBody: { sql: `SELECT NRNOTA FROM TGFCAB WHERE NUNOTA = ${nunota}` }
+                requestBody: { sql: `SELECT NUMNOTA FROM TGFCAB WHERE NUNOTA = ${nunota}` }
             });
             nrNotaPedido = nrResp.data?.responseBody?.rows?.[0]?.[0];
         }
