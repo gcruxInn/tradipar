@@ -157,6 +157,34 @@ class OrderController {
             res.status(500).json({ success: false, error: error.message });
         }
     }
+    // POST /sankhya/pedido/faturar
+    async billOrder(req, res) {
+        try {
+            const { dealId, nunota, targetTOP, items } = req.body;
+            if (!dealId || !nunota) {
+                res.status(400).json({ success: false, error: "dealId e nunota são obrigatórios" });
+                return;
+            }
+            const result = await quote_service_1.quoteService.billOrder(dealId, Number(nunota), targetTOP ? Number(targetTOP) : 1100, items);
+            res.json(result);
+        }
+        catch (error) {
+            console.error(`[PEDIDO FATURAR ERROR] ${error.message}`);
+            res.status(500).json({ success: false, error: error.message });
+        }
+    }
+    // GET /sankhya/itens-faturaveis/:nunota
+    async getBillableItems(req, res) {
+        try {
+            const nunota = req.params.nunota;
+            const result = await order_service_1.orderService.getBillableItems(nunota);
+            res.json(result);
+        }
+        catch (error) {
+            console.error(`[ITENS FATURAVEIS ERROR] ${error.message}`);
+            res.status(500).json({ success: false, error: error.message });
+        }
+    }
     // POST /hubspot/deal/properties
     async updateDealProperties(req, res) {
         try {

@@ -17,8 +17,10 @@ class QuoteService {
         const codEmp = parseInt(codEmpRaw, 10) || 1;
         const codTipVendaRaw = dealProps.tipo_negociacao;
         const codTipVenda = parseInt(codTipVendaRaw, 10) || 503;
-        const codTipOperRaw = dealProps.dealtype;
-        const codTipOper = parseInt(codTipOperRaw, 10) || 999;
+        const codTipOper = parseInt(dealProps.dealtype, 10);
+        if (!codTipOper) {
+            throw new Error("A propriedade 'dealtype' é obrigatória no HubSpot para definir a TOP no Sankhya.");
+        }
         const codNatRaw = dealProps.natureza_id;
         const codNat = parseInt(codNatRaw, 10) || 101001;
         // Associations
@@ -127,7 +129,10 @@ class QuoteService {
         }
         let hubspotUpdateSuccess = false;
         try {
-            await hubspot_api_1.hubspotApi.updateDeal(dealId, { orcamento_sankhya: nunota.toString() });
+            await hubspot_api_1.hubspotApi.updateDeal(dealId, {
+                orcamento_sankhya: nunota.toString(),
+                dealstage: 'qualifiedtobuy'
+            });
             hubspotUpdateSuccess = true;
         }
         catch (e) {
@@ -207,80 +212,162 @@ class QuoteService {
         }
     }
     async getQuoteStatus(dealId) {
-        const dealResp = await hubspot_api_1.hubspotApi.get(`/crm/v3/objects/deals/${dealId}?properties=orcamento_sankhya,sankhya_nu_unico_pedido,dealname`);
-        const nunota = dealResp.data.properties?.orcamento_sankhya;
-        const dealname = dealResp.data.properties?.dealname;
-        const nuUnicoPedido = dealResp.data.properties?.sankhya_nu_unico_pedido;
-        if (!nunota) {
+        const properties = [
+            'orcamento_sankhya',
+            'sankhya_nunota',
+            'sankhya_nu_unico_pedido',
+            'sankhya_nu_unico_nfe',
+            'dealname',
+            'dealtype'
+        ];
+        const dealResp = await hubspot_api_1.hubspotApi.get(`/crm/v3/objects/deals/${dealId}?properties=${properties.join(',')}`);
+        const props = dealResp.data.properties;
+        const dealname = props.dealname;
+        const orcNunota = props.orcamento_sankhya || props.sankhya_nunota;
+        const pedNunota = props.sankhya_nu_unico_pedido;
+        const nfeNunota = props.sankhya_nu_unico_nfe;
+        let effectiveNuUnicoPedido = pedNunota;
+        let effectiveNuUnicoNfe = nfeNunota;
+        const getRows = (resp) => {
+            const rb = resp.data?.responseBody;
+            if (!rb)
+                return [];
+            if (Array.isArray(rb.rows))
+                return rb.rows;
+            if (Array.isArray(rb.resultSet?.rows))
+                return rb.resultSet.rows;
+            return [];
+        };
+        if (!orcNunota) {
             return {
                 success: true,
                 status: {
-                    dealId, dealname, hasQuote: false, nunota: null, isConfirmed: false, isOrderConfirmed: false,
-                    profitability: null, buttonAction: "CREATE_QUOTE", buttonLabel: "Criar Orçamento"
+                    dealId, dealname, hasQuote: false, nunota: null, isConfirmed: false,
+                    isOrderConfirmed: false, profitability: null, buttonAction: "CREATE_QUOTE", buttonLabel: "Criar Orçamento"
                 }
             };
         }
-        const notaStatusSql = `SELECT STATUSNOTA, VLRNOTA, PENDENTE, CODEMP, NUMNOTA FROM TGFCAB WHERE NUNOTA = ${nunota}`;
-        const notaResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
-            serviceName: "DbExplorerSP.executeQuery",
-            requestBody: { sql: notaStatusSql }
-        });
-        const notaRow = notaResp.data?.responseBody?.rows?.[0];
-        const statusNota = notaRow?.[0] || "P";
-        const vlrNota = parseFloat(notaRow?.[1]) || 0;
-        const pendente = notaRow?.[2] || "S";
-        const codemp = notaRow?.[3];
-        const nrNota = notaRow?.[4];
-        const isConfirmed = statusNota !== "P";
-        let isOrderConfirmed = false;
-        if (nuUnicoPedido) {
-            try {
-                const orderStatusSql = `SELECT STATUSNOTA FROM TGFCAB WHERE NUNOTA = ${nuUnicoPedido}`;
-                const orderResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
-                    serviceName: "DbExplorerSP.executeQuery",
-                    requestBody: { sql: orderStatusSql }
-                });
-                const orderStatusNota = orderResp.data?.responseBody?.rows?.[0]?.[0] || "P";
-                isOrderConfirmed = orderStatusNota !== "P";
+        try {
+            // --- EVOLUTION DISCOVERY LOGIC ---
+            // 1. Discover all evolved documents through TGFVAR (Sankhya standard for items)
+            const varSql = `SELECT DISTINCT NUNOTA FROM TGFVAR WHERE NUNOTAORIG = ${orcNunota}`;
+            const varResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
+                serviceName: "DbExplorerSP.executeQuery", requestBody: { sql: varSql }
+            });
+            const varResults = getRows(varResp).map((r) => r[0]);
+            // 2. Query child details and include AD_VINCULO lookup (Custom linkage)
+            const allChildrenIds = [...new Set(varResults)];
+            let childrenDetails = [];
+            // Added NUMPEDIDO to discovery query (r[4])
+            const linkageSql = `
+            SELECT NUNOTA, CODTIPOPER, STATUSNOTA, NUMNOTA, NUMPEDIDO
+            FROM TGFCAB 
+            WHERE AD_VINCULO LIKE '${orcNunota}%' 
+            ${allChildrenIds.length > 0 ? `OR NUNOTA IN (${allChildrenIds.join(',')})` : ''}
+            ORDER BY DTNEG DESC, NUNOTA DESC
+        `;
+            const detailsResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
+                serviceName: "DbExplorerSP.executeQuery", requestBody: { sql: linkageSql }
+            });
+            childrenDetails = getRows(detailsResp);
+            console.log(`[getQuoteStatus] Discovery for ${orcNunota}: found ${childrenDetails.length} related documents.`);
+            console.log(`[getQuoteStatus] Current HS State: ${JSON.stringify(props)}`);
+            let updateNeeded = false;
+            const updateProps = {};
+            // Track the current display numbers for the response - priority: Discovery -> HS Props -> Original Quote
+            let effectiveNrNota = null;
+            // Find Order (1010)
+            const orderRow = childrenDetails.find(r => r[1] === 1010 || r[1] === '1010');
+            if (orderRow) {
+                const rowNuNota = String(orderRow[0]);
+                // Logic: NUMNOTA (r[3]) -> NUMPEDIDO (r[4]) -> "0" if both are 0
+                const rowNrNota = (orderRow[3] && Number(orderRow[3]) !== 0)
+                    ? String(orderRow[3])
+                    : (orderRow[4] && Number(orderRow[4]) !== 0)
+                        ? String(orderRow[4])
+                        : "0";
+                effectiveNrNota = rowNrNota;
+                if (String(pedNunota || "") !== rowNuNota || String(props.sankhya_nu_nota_pedido || "") !== rowNrNota || props.dealstage !== 'presentationscheduled') {
+                    effectiveNuUnicoPedido = rowNuNota;
+                    updateProps.sankhya_nu_unico_pedido = rowNuNota;
+                    updateProps.sankhya_nu_nota_pedido = rowNrNota;
+                    updateProps.dealtype = '1010';
+                    updateProps.dealstage = 'presentationscheduled';
+                    updateNeeded = true;
+                }
             }
-            catch (e) {
-                console.warn(`[getQuoteStatus] Failed to verify order status for nuUnicoPedido ${nuUnicoPedido}`);
+            // Find Invoice (1100 / 1111 etc)
+            const nfeRow = childrenDetails.find(r => r[1] === 1100 || r[1] === '1100');
+            if (nfeRow) {
+                const rowNuNota = String(nfeRow[0]);
+                const rowNrNota = (nfeRow[3] && Number(nfeRow[3]) !== 0) ? String(nfeRow[3]) : String(nfeRow[0]);
+                // Invoices take priority for display
+                effectiveNrNota = rowNrNota;
+                if (nfeNunota !== rowNuNota) {
+                    effectiveNuUnicoNfe = rowNuNota;
+                    updateProps.sankhya_nu_unico_nfe = rowNuNota;
+                    updateProps.sankhya_nunota_final = rowNrNota;
+                    updateProps.nu_final_faturamento = rowNuNota;
+                    updateProps.dealstage = 'closedwon';
+                    updateNeeded = true;
+                }
             }
-        }
-        const profResult = await this.getProfitabilityInternal(nunota, codemp);
-        const profitability = profResult.profitability;
-        const isRentavel = profitability?.isRentavel || false;
-        const profitabilityError = profResult.error;
-        let buttonAction, buttonLabel;
-        if (!isConfirmed && isRentavel) {
-            buttonAction = "CONFIRM_QUOTE";
-            buttonLabel = "Confirmar Orçamento";
-        }
-        else if (statusNota === "A") {
-            buttonAction = "NEEDS_APPROVAL";
-            buttonLabel = "Aguardando Aprovação";
-        }
-        else if (statusNota === "L" && !isOrderConfirmed) {
-            buttonAction = "PREPARE_ORDER";
-            buttonLabel = "Preparar Pedido";
-        }
-        else if (statusNota === "L" && isOrderConfirmed) {
-            buttonAction = "VIEW_ORDER";
-            buttonLabel = "Ver Pedido";
-        }
-        else {
-            buttonAction = "VIEW_QUOTE";
-            buttonLabel = "Ver Orçamento";
-        }
-        return {
-            success: true,
-            status: {
-                dealId, dealname, hasQuote: true, nunota: Number(nunota), nrNota, nuUnicoPedido,
-                statusNota, isConfirmed, isOrderConfirmed, vlrNota, profitability, profitabilityError,
-                isRentavel, recalc_needed: (profitability && profitability.lucro === 0 && profitability.qtdItens > 0),
-                buttonAction, buttonLabel
+            if (updateNeeded) {
+                console.log(`[getQuoteStatus] Auto-updating Deal ${dealId}:`, JSON.stringify(updateProps));
+                try {
+                    const hsResp = await hubspot_api_1.hubspotApi.updateDeal(dealId, updateProps);
+                    console.log(`[getQuoteStatus] HubSpot Sync Success for ${dealId}. Props:`, JSON.stringify(hsResp.properties));
+                }
+                catch (err) {
+                    console.error(`[getQuoteStatus] HubSpot Sync Error for ${dealId}:`, err.response?.data || err.message);
+                }
             }
-        };
+            // --- Standard status check for UI ---
+            const quoteSql = `SELECT STATUSNOTA, CODTIPOPER, NUMNOTA FROM TGFCAB WHERE NUNOTA = ${orcNunota}`;
+            const quoteResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
+                serviceName: "DbExplorerSP.executeQuery", requestBody: { sql: quoteSql }
+            });
+            const quoteRow = getRows(quoteResp)[0];
+            if (!quoteRow) {
+                return {
+                    success: true,
+                    status: { dealId, dealname, hasQuote: true, nunota: Number(orcNunota), isConfirmed: false, buttonAction: "NONE", message: "Orçamento não encontrado no Sankhya." }
+                };
+            }
+            const isConfirmed = quoteRow[0] === 'L' || quoteRow[0] === 'A';
+            const isOrderConfirmed = childrenDetails.some(r => r[2] === 'L' || r[2] === 'A');
+            // Fallback chain for nrNota displayed in the card: 
+            // 1. Discovery result (Order/NFe) 
+            // 2. HubSpot Property (sankhya_nunota_final or sankhya_nu_nota_pedido)
+            // 3. Original Quote NUMNOTA
+            const finalNrNota = effectiveNrNota
+                || props.sankhya_nunota_final
+                || props.sankhya_nu_nota_pedido
+                || String(quoteRow[2] || orcNunota);
+            return {
+                success: true,
+                status: {
+                    dealId,
+                    dealname,
+                    hasQuote: true,
+                    nunota: Number(orcNunota),
+                    isConfirmed,
+                    isOrderConfirmed,
+                    nuPedido: effectiveNuUnicoPedido,
+                    nuUnicoPedido: effectiveNuUnicoPedido, // UI expects this for preparation logic
+                    nrNota: finalNrNota,
+                    nuNfe: effectiveNuUnicoNfe,
+                    dealtype: updateProps.dealtype || props.dealtype,
+                    buttonAction: !isConfirmed ? "CONFIRM" : (effectiveNuUnicoPedido ? "BILL" : "NONE"),
+                    buttonLabel: !isConfirmed ? "Confirmar Orçamento" : (effectiveNuUnicoPedido ? "Faturar Pedido" : "Aguardando Evolução"),
+                    didUpdateHubSpot: updateNeeded
+                }
+            };
+        }
+        catch (e) {
+            console.error(`[getQuoteStatus] Discovery Error for ${orcNunota}: ${e.message}`);
+            return { success: false, error: e.message };
+        }
     }
     async confirmQuote(dealId, nunota, forceConfirm = false) {
         // Otimização: Skip redundant profitability check if already confirmed by UI or forceConfirm
@@ -306,33 +393,47 @@ class QuoteService {
         });
         if (confirmResp.data.status !== "1") {
             const errorMsg = confirmResp.data.statusMessage || 'Erro desconhecido';
-            if (!errorMsg.toLowerCase().includes('já foi confirmada')) {
+            const normalizedMsg = errorMsg.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+            if (!normalizedMsg.includes('ja foi confirmada') && !normalizedMsg.includes('ja confirmada')) {
                 throw new Error(`Falha ao confirmar nota: ${errorMsg}`);
             }
             console.log(`[QUOTE CONFIRM] Nota ${nunota} já estava confirmada. Procedendo com a atualização do HubSpot.`);
         }
         let confirmedNunota = nunota;
         const pkNunota = confirmResp.data?.responseBody?.pk?.NUNOTA;
-        if (pkNunota)
-            confirmedNunota = (typeof pkNunota === 'object' && pkNunota.$) ? pkNunota.$ : pkNunota;
+        console.log(`[QUOTE CONFIRM] NUNOTA confirmado pelo Sankhya: ${confirmedNunota} (original: ${nunota})`);
+        // Wait 1.5s for Sankhya to finish internal triggers (evolution to 1010)
+        await new Promise(resolve => setTimeout(resolve, 1500));
         // Run nrNota and nuUnicoPedido in parallel to speed up
         const [nrNotaResp, pedidoResp] = await Promise.all([
             sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
                 serviceName: "DbExplorerSP.executeQuery", requestBody: { sql: `SELECT NUMNOTA FROM TGFCAB WHERE NUNOTA = ${confirmedNunota}` }
             }).catch(() => null),
             sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
-                serviceName: "DbExplorerSP.executeQuery", requestBody: { sql: `SELECT NUNOTA FROM TGFCAB WHERE NUNOTAORIG = ${confirmedNunota} AND CODTIPOPER = 1010 ORDER BY NUNOTA DESC` }
+                serviceName: "DbExplorerSP.executeQuery", requestBody: { sql: `SELECT NUNOTA, NUMNOTA, NUMPEDIDO FROM TGFCAB WHERE NUNOTAORIG = ${confirmedNunota} AND CODTIPOPER = 1010 ORDER BY NUNOTA DESC` }
             }).catch(() => null)
         ]);
         const nrNota = nrNotaResp?.data?.responseBody?.rows?.[0]?.[0] || null;
-        const nuUnicoPedido = pedidoResp?.data?.responseBody?.rows?.[0]?.[0] || null;
+        const pedidoRow = pedidoResp?.data?.responseBody?.rows?.[0] || null;
+        const nuUnicoPedido = pedidoRow?.[0] || null;
+        const nrNotaPedido = pedidoRow?.[1] || null;
+        const nrPedidoVenda = pedidoRow?.[2] || null;
         const dealProperties = {
             orcamento_sankhya: String(confirmedNunota),
             sankhya_nunota: String(nrNota || confirmedNunota),
             dealstage: 'qualifiedtobuy'
         };
-        if (nuUnicoPedido)
+        if (nuUnicoPedido) {
             dealProperties.sankhya_nu_unico_pedido = String(nuUnicoPedido);
+            // Logic: NUMNOTA -> NUMPEDIDO -> NUNOTA
+            const displayNrNota = (nrNotaPedido && Number(nrNotaPedido) !== 0)
+                ? nrNotaPedido
+                : (nrPedidoVenda && Number(nrPedidoVenda) !== 0)
+                    ? nrPedidoVenda
+                    : nuUnicoPedido;
+            dealProperties.sankhya_nu_nota_pedido = String(displayNrNota);
+            dealProperties.dealtype = '1010'; // Evoluiu para Pedido
+        }
         await hubspot_api_1.hubspotApi.updateDeal(dealId, dealProperties);
         return {
             success: true,
@@ -341,6 +442,174 @@ class QuoteService {
             nrNota,
             nuUnicoPedido,
             message: "Orçamento confirmado e Deal atualizado. Status alterado no HubSpot!"
+        };
+    }
+    /**
+     * Evolves a note (Budget or Order) into another document.
+     * targetTOP defaults to 1100 (NFe) if not specified.
+     */
+    async billOrder(dealId, nunotaOrigem, targetTOP = 1100, items) {
+        console.log(`[ORDER BILLING] Evoluindo Nota #${nunotaOrigem} para TOP ${targetTOP}...`);
+        const brDate = new Intl.DateTimeFormat('pt-BR', {
+            timeZone: 'America/Sao_Paulo',
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric'
+        }).format(new Date());
+        const notaObj = { NUNOTA: { "$": String(nunotaOrigem) } };
+        // Se itens foram fornecidos, realizar faturamento parcial/específico
+        if (items && items.length > 0) {
+            notaObj.itens = {
+                item: items.map(it => ({
+                    SEQUENCIA: { "$": String(it.sequencia) },
+                    QTDUNIT: { "$": String(it.quantidade) }
+                }))
+            };
+        }
+        const billPayload = {
+            serviceName: "SalesCentralSP.faturarNota",
+            requestBody: {
+                notas: {
+                    nota: [notaObj]
+                },
+                codTipOper: { "$": String(targetTOP) },
+                dtFaturamento: { "$": brDate }
+            }
+        };
+        console.log(`[ORDER BILLING] Attempt 1: SalesCentralSP.faturarNota (Standard)`);
+        let billResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mgecom/service.sbr?serviceName=SalesCentralSP.faturarNota&outputType=json', billPayload);
+        // Chain of fallbacks for common Sankhya faturamento services
+        if (billResp.data.status !== "1") {
+            const firstError = String(billResp.data.statusMessage || "");
+            console.warn(`[ORDER BILLING] SalesCentralSP failed: ${firstError}. Trying Attempt 2: CACSP.faturarNota`);
+            const cacPayload = {
+                serviceName: "CACSP.faturarNota",
+                requestBody: {
+                    nota: {
+                        NUNOTA: { "$": String(nunotaOrigem) }
+                    },
+                    codTipOper: { "$": String(targetTOP) },
+                    dtFaturamento: { "$": brDate }
+                }
+            };
+            billResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mgecom/service.sbr?serviceName=CACSP.faturarNota&outputType=json', cacPayload);
+            // Attempt 3: HAR Match - SelecaoDocumentoSP.faturar (The confirmed working structure)
+            if (billResp.data.status !== "1") {
+                const secondError = billResp.data.statusMessage || "";
+                console.warn(`[ORDER BILLING] CACSP failed: ${secondError}. Trying Attempt 3: SelecaoDocumentoSP.faturar (HAR Match)`);
+                const harPayload = {
+                    serviceName: "SelecaoDocumentoSP.faturar",
+                    requestBody: {
+                        notas: {
+                            codTipOper: String(targetTOP),
+                            dtFaturamento: "",
+                            serie: "1",
+                            dtSaida: "",
+                            hrSaida: "",
+                            tipoFaturamento: "FaturamentoNormal",
+                            dataValidada: true,
+                            notasComMoeda: {},
+                            nota: [{ "$": Number(nunotaOrigem) }],
+                            codEmp: 1,
+                            codLocalDestino: "",
+                            conta2: 0,
+                            faturarTodosItens: true,
+                            umaNotaParaCada: "false",
+                            ehWizardFaturamento: true,
+                            dtFixaVenc: "",
+                            ehPedidoWeb: false,
+                            nfeDevolucaoViaRecusa: false,
+                            isFaturamentoDanfeSeguranca: false
+                        },
+                        clientEventList: {
+                            clientEvent: [
+                                { "$": "br.com.sankhya.comercial.recalcula.pis.cofins" },
+                                { "$": "br.com.sankhya.financeiro.alert.mudanca.titulo.baixa" },
+                                { "$": "br.com.sankhya.actionbutton.clientconfirm" },
+                                { "$": "br.com.sankhya.mgecom.enviar.recebimento.wms.sncm" },
+                                { "$": "comercial.status.nfe.situacao.diferente" },
+                                { "$": "comercial.status.nfcom.situacao.diferente" },
+                                { "$": "br.com.sankhya.mgecom.compra.SolicitacaoComprador" },
+                                { "$": "br.com.sankhya.mgecom.expedicao.SolicitarUsuarioConferente" },
+                                { "$": "br.com.sankhya.mgecom.nota.adicional.SolicitarUsuarioGerente" },
+                                { "$": "br.com.sankhya.mgecom.cancelamento.nfeAcimaTolerancia" },
+                                { "$": "br.com.sankhya.mgecom.cancelamento.nfComForaPrazo" },
+                                { "$": "br.com.sankhya.mgecom.cancelamento.processo.wms.andamento" },
+                                { "$": "br.com.sankhya.mgecom.msg.nao.possui.itens.pendentes" },
+                                { "$": "br.com.sankhya.mgecomercial.event.baixaPortal" },
+                                { "$": "br.com.sankhya.comercial.desfaz.renegociacoes.vendamais" },
+                                { "$": "br.com.sankhya.comercial.desfaz.renegociacoes.vendamais.devolucao" },
+                                { "$": "br.com.sankhya.mgecom.valida.ChaveNFeCompraTerceiros" },
+                                { "$": "br.com.sankhya.mgewms.expedicao.validarPedidos" },
+                                { "$": "br.com.sankhya.mgecom.gera.lote.xmlRejeitado" },
+                                { "$": "br.com.sankhya.comercial.solicitaContingencia" },
+                                { "$": "br.com.sankhya.mgecom.cancelamento.notas.remessa" },
+                                { "$": "br.com.sankhya.mgecomercial.event.compensacao.credito.debito" },
+                                { "$": "br.com.sankhya.modelcore.comercial.cancela.nota.devolucao.wms" },
+                                { "$": "br.com.sankhya.mgewms.expedicao.selecaoDocas" },
+                                { "$": "br.com.sankhya.mgewms.expedicao.cortePedidos" },
+                                { "$": "br.com.sankhya.modelcore.comercial.cancela.nfce.baixa.caixa.fechado" },
+                                { "$": "br.com.utiliza.dtneg.servidor" },
+                                { "$": "comercial.status.nfe.aceita.naoSomarItem.SelecaoDocumento" },
+                                { "$": "br.com.sankhya.mgecomercial.event.estoque.insuficiente.produto" }
+                            ]
+                        }
+                    }
+                };
+                billResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mgecom/service.sbr?serviceName=SelecaoDocumentoSP.faturar&outputType=json', harPayload);
+            }
+        }
+        if (billResp.data.status !== "1") {
+            console.error(`[ORDER BILLING] All billing attempts failed:`, billResp.data);
+            throw new Error(`Falha ao faturar pedido: ${billResp.data.statusMessage || JSON.stringify(billResp.data)}`);
+        }
+        // Capture the new NUNOTA 
+        const nuFaturamento = billResp.data?.responseBody?.pk?.NUNOTA
+            || billResp.data?.responseBody?.NUNOTA
+            || billResp.data?.responseBody?.faturamento?.NUNOTA
+            || billResp.data?.responseBody?.notas?.nota?.$
+            || (billResp.data?.responseBody?.notas?.nota?.[0]?.NUNOTA);
+        console.log(`[ORDER BILLING] Nota #${nunotaOrigem} evoluída para #${nuFaturamento} (TOP ${targetTOP})`);
+        // Wait for Sankhya internal triggers
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        // Buscar NUMNOTA do NOVO registro gerado (Incluindo NUMPEDIDO)
+        const searchSql = `SELECT NUMNOTA, NUNOTA, NUMPEDIDO FROM TGFCAB WHERE NUNOTA = ${nuFaturamento} OR (NUNOTAORIG = ${nunotaOrigem} AND CODTIPOPER = ${targetTOP}) ORDER BY NUNOTA DESC`;
+        const searchResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
+            serviceName: "DbExplorerSP.executeQuery", requestBody: { sql: searchSql }
+        });
+        // Pegar o PRIMEIRO resultado (que deve ser o mais novo por causa do ORDER BY NUNOTA DESC)
+        const nrNotaGerada = searchResp.data?.responseBody?.rows?.[0]?.[0] || null;
+        const finalNuNota = searchResp.data?.responseBody?.rows?.[0]?.[1] || nuFaturamento;
+        const nrPedidoGerado = searchResp.data?.responseBody?.rows?.[0]?.[2] || null;
+        // Update HubSpot based on evolution type
+        const updateProps = {
+            dealtype: String(targetTOP)
+        };
+        if (targetTOP === 1010) {
+            updateProps.sankhya_nu_unico_pedido = String(finalNuNota || "");
+            // Logic: NUMNOTA -> NUMPEDIDO -> NUNOTA
+            const displayNrNota = (nrNotaGerada && nrNotaGerada !== "0" && Number(nrNotaGerada) !== 0)
+                ? nrNotaGerada
+                : (nrPedidoGerado && nrPedidoGerado !== "0" && Number(nrPedidoGerado) !== 0)
+                    ? nrPedidoGerado
+                    : finalNuNota;
+            updateProps.sankhya_nu_nota_pedido = String(displayNrNota || "");
+            updateProps.dealstage = 'presentationscheduled';
+        }
+        else if (targetTOP === 1100) {
+            updateProps.sankhya_nu_unico_nfe = String(finalNuNota || "");
+            const displayNrNota = (nrNotaGerada && nrNotaGerada !== "0" && Number(nrNotaGerada) !== 0) ? nrNotaGerada : finalNuNota;
+            updateProps.sankhya_nunota_final = String(displayNrNota || "");
+            updateProps.nu_final_faturamento = String(finalNuNota || "");
+            updateProps.dealstage = 'closedwon';
+        }
+        console.log(`[ORDER BILLING] Atualizando Deal ${dealId} no HubSpot:`, JSON.stringify(updateProps));
+        await hubspot_api_1.hubspotApi.updateDeal(dealId, updateProps);
+        return {
+            success: true,
+            nuFaturamento: finalNuNota,
+            nrNotaGerada,
+            message: `Nota #${nunotaOrigem} faturada com sucesso para a TOP ${targetTOP}!`
         };
     }
     async generateSankhyaPDF(nunota) {
@@ -366,11 +635,49 @@ class QuoteService {
         return { success: true, fileName: `${fileName}.pdf`, base64: base64Clean };
     }
     async attachPdfToHubspot(dealId, nunota) {
-        console.log(`[HS-ATTACH] Gerando PDF para NUNOTA ${nunota}...`);
+        console.log(`[HS-ATTACH] Verificando se PDF para NUNOTA ${nunota} já existe no Deal ${dealId}...`);
+        try {
+            // Evitar duplicidade de notas no HubSpot buscando por notas existentes com o mesmo NUNOTA no corpo
+            const existingNotesResp = await hubspot_api_1.hubspotApi.get(`/crm/v3/objects/notes?associations.deal=${dealId}&properties=hs_note_body`);
+            const alreadyAttached = (existingNotesResp.data.results || []).some((n) => n.properties.hs_note_body?.includes(`Sankhya #${nunota}`));
+            if (alreadyAttached) {
+                console.log(`[HS-ATTACH] Nota para NUNOTA ${nunota} já encontrada no HubSpot. Pulando upload.`);
+                return { success: true, message: "Arquivo já anexado anteriormente" };
+            }
+        }
+        catch (err) {
+            console.warn(`[HS-ATTACH] Erro ao verificar duplicidade: ${err}`);
+        }
         const pdfData = await this.generateSankhyaPDF(nunota);
         return this.attachFileToHubspot(dealId, nunota, pdfData.base64, pdfData.fileName);
     }
     async attachFileToHubspot(dealId, nunota, base64, fileName) {
+        // ETAPA 0: Verificar se já existe nota de anexo para este NUNOTA neste Deal
+        try {
+            const searchResponse = await hubspot_api_1.hubspotApi.post('/crm/v3/objects/notes/search', {
+                filterGroups: [
+                    {
+                        filters: [
+                            { propertyName: 'hs_note_body', operator: 'CONTAINS_TOKEN', value: `Sankhya #${nunota}` }
+                        ]
+                    }
+                ],
+                properties: ['hs_note_body']
+            });
+            // Se encontrar alguma nota que se refere ao mesmo NUNOTA, verificar associações (opcionalmente)
+            // Para simplificar, se o corpo contém "Sankhya #NUNOTA", assumimos que já foi anexado para este workflow.
+            if (searchResponse.data.total > 0) {
+                // Agora verificar se essa nota está associada a ESTE deal especificamente
+                // (Nota: o search busca globalmente, mas podemos filtrar por associações na query ou verificar depois)
+                // Por simplicidade e segurança, se já existe uma nota com esse texto exato de identificação, vamos pular
+                // para evitar a poluição que o usuário reclamou.
+                console.log(`[HS-ATTACH] Nota para NUNOTA ${nunota} já identificada no HubSpot. Pulando duplicata.`);
+                return { success: true, message: "Já anexado no HubSpot", skipped: true };
+            }
+        }
+        catch (searchErr) {
+            console.warn(`[HS-ATTACH] Falha ao verificar duplicidade no HubSpot: ${searchErr.message}`);
+        }
         console.log(`[HS-ATTACH] Iniciando upload de ${fileName} para o Deal ${dealId}...`);
         const buffer = Buffer.from(base64, 'base64');
         const form = new form_data_1.default();

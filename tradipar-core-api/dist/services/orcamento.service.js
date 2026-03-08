@@ -54,8 +54,10 @@ class OrcamentoService {
             console.warn(`[OrcamentoService] Failed to fetch partner defaults: ${e.message}`);
         }
         // 5. Preparation logic
-        const codTipOperRaw = props.dealtype;
-        const codTipOper = parseInt(codTipOperRaw, 10) || 999;
+        const codTipOper = parseInt(props.dealtype, 10);
+        if (!codTipOper) {
+            throw new Error("A propriedade 'dealtype' é obrigatória no HubSpot para definir a TOP no Sankhya.");
+        }
         const codTipVendaRaw = props.tipo_negociacao;
         const codTipVenda = parseInt(codTipVendaRaw, 10) || (parcTipVenda ? parseInt(parcTipVenda, 10) : 503);
         const codVend = parcVend ? parseInt(parcVend, 10) : 0;
@@ -126,7 +128,8 @@ class OrcamentoService {
             await hubspot_api_1.hubspotApi.updateDeal(dealId, {
                 orcamento_sankhya: nunota.toString(),
                 sankhya_nunota: numNota.toString(),
-                natureza_id: codNat.toString()
+                natureza_id: codNat.toString(),
+                dealstage: 'qualifiedtobuy'
             });
             console.log(`[OrcamentoService] Deal ${dealId} synced with NUNOTA ${nunota}`);
         }

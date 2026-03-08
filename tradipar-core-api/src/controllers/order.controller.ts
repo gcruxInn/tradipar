@@ -160,6 +160,34 @@ export class OrderController {
     }
   }
 
+  // POST /sankhya/pedido/faturar
+  public async billOrder(req: Request, res: Response): Promise<void> {
+    try {
+      const { dealId, nunota, targetTOP, items } = req.body;
+      if (!dealId || !nunota) {
+        res.status(400).json({ success: false, error: "dealId e nunota são obrigatórios" });
+        return;
+      }
+      const result = await quoteService.billOrder(dealId, Number(nunota), targetTOP ? Number(targetTOP) : 1100, items);
+      res.json(result);
+    } catch (error: any) {
+      console.error(`[PEDIDO FATURAR ERROR] ${error.message}`);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  // GET /sankhya/itens-faturaveis/:nunota
+  public async getBillableItems(req: Request, res: Response): Promise<void> {
+    try {
+      const nunota = req.params.nunota as string;
+      const result = await orderService.getBillableItems(nunota);
+      res.json(result);
+    } catch (error: any) {
+      console.error(`[ITENS FATURAVEIS ERROR] ${error.message}`);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
   // POST /hubspot/deal/properties
   public async updateDealProperties(req: Request, res: Response): Promise<void> {
     try {

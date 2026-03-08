@@ -156,15 +156,79 @@ class OrderService {
         }
       }
     );
-    if (resp.data.status !== "1") throw new Error(resp.data.statusMessage || 'Falha ao salvar obs');
+    if (resp.data.status !== "1") {
+      console.error(`[PEDIDO OBS] Erro ao salvar para NUNOTA ${nunota}. Status: ${resp.data.status}, Message: ${resp.data.statusMessage}`);
+      console.error(`[PEDIDO OBS] Detalhes do erro Sankhya:`, JSON.stringify(resp.data));
+      throw new Error(resp.data.statusMessage || 'Falha ao salvar obs');
+    }
     console.log(`[PEDIDO OBS] Obs salva com sucesso para NUNOTA ${nunota}`);
     return { success: true, nunota, message: "Observação salva com sucesso." };
   }
 
+  public async getBillableItems(nunota: string) {
+    const sql = `
+      SELECT 
+        ITE.SEQUENCIA, 
+        ITE.CODPROD, 
+        PRO.DESCRPROD, 
+        ITE.QTDNEG, 
+        NVL(ITE.QTDFAT, 0) as QTDFAT, 
+        (ITE.QTDNEG - NVL(ITE.QTDFAT, 0)) as QTDPENDENTE,
+        ITE.VLRUNIT,
+        NVL((SELECT SUM(ESTOQUE) FROM TGFEST WHERE CODPROD = ITE.CODPROD AND CODEMP = ITE.CODEMP), 0) as ESTOQUE
+      FROM TGFITE ITE
+      INNER JOIN TGFPRO PRO ON PRO.CODPROD = ITE.CODPROD
+      WHERE ITE.NUNOTA = ${Number(nunota)}
+      AND (ITE.QTDNEG - NVL(ITE.QTDFAT, 0)) > 0
+      ORDER BY ITE.SEQUENCIA
+    `;
+    console.log(`[ORDER SERVICE] Fetching billable items with SQL:\n${sql}`);
+    const resp = await sankhyaApi.post<any>('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
+      serviceName: "DbExplorerSP.executeQuery",
+      requestBody: { sql }
+    });
+    
+    if (resp.data.status !== "1") {
+      console.error(`[ORDER SERVICE] Error from Sankhya: ${resp.data.statusMessage}`);
+      return { success: false, error: resp.data.statusMessage || "Erro ao buscar itens no Sankhya" };
+    }
+
+    const rows = resp.data?.responseBody?.rows || [];
+    console.log(`[ORDER SERVICE] Found ${rows.length} rows`);
+    const items = rows.map((r: any) => ({
+      sequencia: Number(r[0]),
+      codProd: Number(r[1]),
+      descrProd: fixEncoding(r[2]),
+      qtdNeg: parseFloat(r[3]),
+      qtdFat: parseFloat(r[4]),
+      qtdPendente: parseFloat(r[5]),
+      vlrUnit: parseFloat(r[6]),
+      estoque: parseFloat(r[7] || 0)
+    }));
+
+    return { success: true, nunota, items };
+  }
+
   public async attachFileToOrder(nunota: string, fileBase64: string, fileName: string, descricao?: string) {
+    const desc = (descricao || 'Pedido Compra').substring(0, 20);
+
+    // ETAPA 0: Verificar se já existe anexo com mesmo nome/descrição para este NUNOTA
+    try {
+      const checkSql = `SELECT COUNT(*) FROM TFPABD WHERE PKENTITY = '${nunota}' AND NAMEENTITY = 'CabecalhoNota' AND (NOMEARQUIVO = '${fileName}' OR DESCRICAO = '${desc}')`;
+      const checkResp = await sankhyaApi.post<any>('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
+        serviceName: "DbExplorerSP.executeQuery", requestBody: { sql: checkSql }
+      });
+      const exists = parseInt(checkResp.data?.responseBody?.rows?.[0]?.[0]) > 0;
+      if (exists) {
+        console.log(`[PEDIDO ANEXAR] Arquivo ou descrição já existente para NUNOTA ${nunota}. Pulando.`);
+        return { success: true, message: "Já anexado no Sankhya" };
+      }
+    } catch (err) {
+      console.warn(`[PEDIDO ANEXAR] Falha ao verificar duplicidade no Sankhya: ${err}`);
+    }
+
     const timestamp = Date.now().toString().substring(5); // unique digits
     const sessionKey = `ANEXO_SISTEMA_CabecalhoNota_${nunota}_${timestamp}`;
-    const desc = (descricao || 'Pedido Compra').substring(0, 20);
 
     // ETAPA 1: Upload via sessionUpload.mge
     const cleanBase64 = fileBase64.replace(/^data:[^;]+;base64,/, '');
@@ -228,7 +292,14 @@ class OrderService {
       }
     );
 
-    if (resp.data.status !== "1") throw new Error(resp.data.statusMessage || 'Falha ao confirmar pedido');
+    if (resp.data.status !== "1") {
+      const errorMsg = resp.data.statusMessage || 'Falha ao confirmar pedido';
+      const normalizedMsg = errorMsg.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      if (!normalizedMsg.includes('ja foi confirmada') && !normalizedMsg.includes('ja confirmada')) {
+        throw new Error(errorMsg);
+      }
+      console.log(`[PEDIDO CONFIRMAR] Pedido ${nunota} já estava confirmado.`);
+    }
 
     // Buscar NRNOTA
     let nrNotaPedido = null;

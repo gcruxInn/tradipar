@@ -15,6 +15,21 @@ Diferente do motor legado, este framework utiliza a nova **API Gateway do Sankhy
     -   Upload para o Sankhya via `sessionUpload.mge` (corrigido para multipart/form-data).
     -   Sincronização automática para o HubSpot Deal como Anexo/Nota.
 -   **Self-Healing Logs:** Logs estruturados para facilitar o diagnóstico de erros de negócio e infraestrutura.
+-   **Multi-Stage Evolution (Budget -> Order -> NFe):** Suporte completo ao ciclo de vida da venda (TOPs 999, 1010 e 1100).
+
+## 📜 Regras de Negócio (Core da Integração)
+
+A integração segue um mapeamento rígido entre o tipo de operação (**dealtype**) e as propriedades de armazenamento de IDs únicos no HubSpot:
+
+| Deal Type (TOP) | Descrição | Propriedade HubSpot (Nro. Único / NUNOTA) |
+| :--- | :--- | :--- |
+| **999** | Orçamento B2B | `orcamento_sankhya` |
+| **1010** | Pedido de Venda | `sankhya_nu_unico_pedido` |
+| **1100** | Faturamento (NFe) | `sankhya_nu_unico_nfe` |
+
+> [!NOTE]
+> Ao evoluir o status no HubSpot, a API busca o NUNOTA correspondente na propriedade associada ao seu `dealtype` atual para realizar operações como geração de PDF ou conferência de rentabilidade.
+
 
 ## 🛠️ Stack Tecnológica
 

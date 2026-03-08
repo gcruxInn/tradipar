@@ -89,6 +89,8 @@ app.put('/sankhya/pedido/obs/:nunota', orderController.saveOrderObs.bind(orderCo
 app.post('/sankhya/pedido/anexar', orderController.attachFileToOrder.bind(orderController));
 app.post('/sankhya/pedido/anexar-pdf', orderController.attachGeneratedPdfToOrder.bind(orderController));
 app.post('/sankhya/pedido/confirmar/:nunota', orderController.confirmOrder.bind(orderController));
+app.post('/sankhya/pedido/faturar', orderController.billOrder.bind(orderController));
+app.get('/sankhya/itens-faturaveis/:nunota', orderController.getBillableItems.bind(orderController));
 app.post('/hubspot/deal/properties', orderController.updateDealProperties.bind(orderController));
 
 export default app;
