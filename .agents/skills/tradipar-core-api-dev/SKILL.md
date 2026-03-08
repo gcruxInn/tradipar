@@ -42,6 +42,224 @@ Você atua na camada da nova **Enterprise Core API** (`tradipar-core-api/`). Est
    - **Sincronização:** Use `rsync -avz --exclude 'node_modules' --exclude '.git' ./ user@host:~/...` para o servidor Oracle.
    - **Hot-Reload:** Graças aos Volumes no `docker-compose.yml`, o container lê o `dist/` sincronizado instantaneamente. Use `docker compose restart` ou `down/up` apenas se houver mudanças no `docker-compose.yml` ou `.env`.
 
+## Endpoints de Vendas Pedidos (v1 EasyAPI)
+
+### 1. Atualizar Pedido de Venda
+
+A atualização de um Pedido de Venda já confirmado só é permitida se a TOP do pedido estiver configurada com a opção 'Permitir Alteração após Confirmar' ativada. Além disso, na alteração de pedido, sempre enviar os itens e os financeiros.
+- **Versão mínima requerida**: Sankhya Om 4.34
+- **Método**: `PUT /v1/vendas/pedidos/{codigoPedido}`
+
+<details>
+<summary>OpenAPI Definition</summary>
+
+```json
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "API Sankhya",
+    "description": "API de Integrações com Gateway Sankhya.",
+    "version": "1.0"
+  },
+  "paths": {
+    "/v1/vendas/pedidos/{codigoPedido}": {
+      "put": {
+        "tags": ["Vendas Pedidos"],
+        "summary": "Atualizar Pedido de Venda",
+        "parameters": [
+          {
+            "name": "codigoPedido",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64" }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/atualizarPedido" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "atualizarPedido": {
+        "type": "object",
+        "required": ["data", "financeiros", "hora", "itens", "serie", "valorTotal"],
+        "properties": {
+          "data": { "type": "string", "example": "30/05/2024" },
+          "hora": { "type": "string", "example": "07:34" },
+          "codigoVendedor": { "type": "integer", "example": 11 },
+          "codigoCliente": { "type": "integer", "example": 8115 },
+          "observacao": { "type": "string" },
+          "valorTotal": { "type": "number", "example": 1060 },
+          "itens": { "type": "array", "items": { "$ref": "#/components/schemas/Pedido_de_Vendasitem" } },
+          "financeiros": { "type": "array", "items": { "$ref": "#/components/schemas/Pedido_de_Vendasfinanceiro" } }
+        }
+      },
+      "Pedido_de_Vendasitem": {
+        "type": "object",
+        "required": ["codigoLocalEstoque", "codigoProduto", "controle", "quantidade", "sequencia", "valorUnitario"],
+        "properties": {
+          "sequencia": { "type": "integer" },
+          "codigoProduto": { "type": "integer" },
+          "quantidade": { "type": "number" },
+          "valorUnitario": { "type": "number" },
+          "codigoLocalEstoque": { "type": "integer" },
+          "controle": { "type": "string" }
+        }
+      },
+      "Pedido_de_Vendasfinanceiro": {
+        "type": "object",
+        "required": ["dataVencimento", "sequencia", "tipoPagamento", "valorParcela"],
+        "properties": {
+          "sequencia": { "type": "integer" },
+          "tipoPagamento": { "type": "integer" },
+          "dataVencimento": { "type": "string" },
+          "valorParcela": { "type": "number" }
+        }
+      }
+    }
+  }
+}
+```
+</details>
+
+### 2. Cancela Pedido de Venda
+
+Cancela um Pedido de Venda disponível no Sankhya Om. Obs.: Pedidos faturados não serão cancelados.
+- **Versão mínima requerida**: Sankhya Om 4.34
+- **Método**: `POST /v1/vendas/pedidos/{codigoPedido}/cancela`
+
+<details>
+<summary>OpenAPI Definition</summary>
+
+```json
+{
+  "openapi": "3.0.3",
+  "paths": {
+    "/v1/vendas/pedidos/{codigoPedido}/cancela": {
+      "post": {
+        "summary": "Cancela Pedido de Venda",
+        "parameters": [
+          {
+            "name": "codigoPedido",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64" }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": { "motivo": { "type": "string", "example": "Cliente desistiu da compra" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      }
+    }
+  }
+}
+```
+</details>
+
+### 3. Consultar Pedidos de Venda
+
+Consulta lista de pedidos com filtros de data, empresa, cliente, etc.
+- **Método**: `GET /v1/vendas/pedidos`
+
+<details>
+<summary>OpenAPI Definition</summary>
+
+```json
+{
+  "openapi": "3.0.3",
+  "paths": {
+    "/v1/vendas/pedidos": {
+      "get": {
+        "summary": "Consultar Pedidos de Venda",
+        "parameters": [
+          { "name": "page", "in": "query", "required": true, "schema": { "type": "integer" } },
+          { "name": "codigoEmpresa", "in": "query", "required": true, "schema": { "type": "integer" } },
+          { "name": "dataNegociacaoInicio", "in": "query", "schema": { "type": "string" } },
+          { "name": "dataNegociacaoFinal", "in": "query", "schema": { "type": "string" } },
+          { "name": "codigoCliente", "in": "query", "schema": { "type": "integer" } },
+          { "name": "confirmada", "in": "query", "schema": { "type": "boolean" } }
+        ],
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      }
+    }
+  }
+}
+```
+</details>
+
+### 4. Incluir Pedido de Venda
+
+Inclui um Pedido de Venda no Sankhya Om, SEMPRE A CONFIRMAR. Utiliza um `notaModelo` para preencher dados padrões (empresa, TOP, natureza).
+- **Versão mínima requerida**: Sankhya Om 4.34
+- **Método**: `POST /v1/vendas/pedidos`
+
+<details>
+<summary>OpenAPI Definition</summary>
+
+```json
+{
+  "openapi": "3.0.3",
+  "paths": {
+    "/v1/vendas/pedidos": {
+      "post": {
+        "summary": "Incluir Pedido de Venda",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/movimentoPedido" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "movimentoPedido": {
+        "type": "object",
+        "required": ["notaModelo", "data", "hora", "itens", "financeiros", "valorTotal"],
+        "properties": {
+          "notaModelo": { "type": "integer", "description": "ID do Modelo de Nota configurado no Sankhya" },
+          "data": { "type": "string", "example": "30/05/2024" },
+          "hora": { "type": "string", "example": "07:34" },
+          "codigoVendedor": { "type": "integer" },
+          "codigoCliente": { "type": "integer" },
+          "observacao": { "type": "string" },
+          "valorTotal": { "type": "number" },
+          "itens": { "type": "array", "items": { "$ref": "#/components/schemas/Pedido_de_Vendasitem" } },
+          "financeiros": { "type": "array", "items": { "$ref": "#/components/schemas/Pedido_de_Vendasfinanceiro" } }
+        }
+      }
+    }
+  }
+}
+```
+</details>
+
 ## Mindset do Agente
 - *Construa de Forma Blindada*: Você está migrando uma herança complexa. A funcionalidade anterior tem manhas, mas a nova implementação devera sanar de forma definitiva as intermitências. Traga a lógica pro typescript apenas da forma que obedeça aos 7 pontos acima.
 
