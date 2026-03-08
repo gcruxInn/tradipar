@@ -64,6 +64,11 @@ interface QuoteStatus {
     profitabilityError?: string;
     statusNota?: string;
     nrNota?: string | number;
+    nuPedido?: string | number;
+    nuUnicoPedido?: string | number;
+    nuNfe?: string | number;
+    dealtype?: string;
+    didUpdateHubSpot?: boolean;
 }
 
 interface Profitability {
@@ -251,6 +256,12 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     const [checkoutError, setCheckoutError] = useState<string | null>(null);
     const releaseIntervalRef = useRef<any>(null);
     const hasAutoAdvancedRef = useRef(false);
+
+    // Partial Billing / Evolution State
+    const [billableItems, setBillableItems] = useState<any[]>([]);
+    const [selectedBillItems, setSelectedBillItems] = useState<Record<number, number>>({}); // sequencia -> quantidade
+    const [isPartialBill, setIsPartialBill] = useState(false);
+    const [fetchingBillables, setFetchingBillables] = useState(false);
 
     // Add Item State
     const [searchTerm, setSearchTerm] = useState("");
@@ -445,11 +456,36 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 if (result.success) {
                     setQuoteStatus(result.status);
                     
-                    // Auto-avançar para a aba Fechamento (Preparar Pedido) se já estiver confirmado
+                    // Refresh HubSpot UI if backend detected external changes (Auto-Discovery)
+                    if (result.status?.didUpdateHubSpot) {
+                        console.log("[AUTO-DISCOVERY] Backend sync detected. Refreshing UI properties.");
+                        onRefreshProperties();
+                    }
+
+                    if (result.status?.nuUnicoPedido && String(result.status.nuUnicoPedido) !== '--') {
+                        setPedidoNuUnico(String(result.status.nuUnicoPedido));
+                    } else {
+                        setPedidoNuUnico(null);
+                    }
+                    
+                    // Auto-avançar para a aba Fechamento se houver um orçamento/pedido confirmado
                     if (result.status?.isConfirmed && !hasAutoAdvancedRef.current) {
                         hasAutoAdvancedRef.current = true;
                         setCurrentStep(2);
-                        setCheckoutSubStep(result.status.isOrderConfirmed ? 4 : 2); 
+                        
+                        const isBudgetDeal = result.status.dealtype === '999';
+                        const nuPedido = result.status.nuPedido;
+
+                        if (isBudgetDeal) {
+                            // Orçamento confirmado (Ainda não evoluiu) -> Ir para confirmação (Sub-etapa 0/1)
+                            setCheckoutSubStep(0);
+                        } else if (nuPedido) {
+                            // Pedido evoluído (1010) -> Iniciar na Sub-etapa de Preparação (2)
+                            setCheckoutSubStep(2);
+                        } else {
+                            // Outros casos (Aguardando evolução)
+                            setCheckoutSubStep(0);
+                        }
                     }
                 }
             }
@@ -1262,11 +1298,8 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                     <Button
                         onClick={() => {
                             const needsRelease = quoteStatus?.profitability && !quoteStatus.profitability.isRentavel;
-                            if (quoteStatus?.isConfirmed) {
-                                setCheckoutSubStep(2); // Vai direto para enviar pedido
-                            } else {
-                                setCheckoutSubStep(needsRelease ? 0 : 1);
-                            }
+                            // Sempre ir para o passo 1 (evolução/confirmação) para avaliar o estado atual
+                            setCheckoutSubStep(needsRelease ? 0 : 1);
                             setCheckoutError(null);
                             setCheckoutMessage(null);
                             setCurrentStep(2);
@@ -1358,6 +1391,33 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             }
         };
 
+        // === Helper: Fetch Billable Items ===
+        const fetchBillableItems = async () => {
+            if (!quoteStatus?.nunota) return;
+            setFetchingBillables(true);
+            try {
+                console.log(`[BILLABLES] Fetching for NUNOTA ${quoteStatus.nunota}...`);
+                const resp = await hubspot.fetch(`${BASE_API_URL}/sankhya/itens-faturaveis/${quoteStatus.nunota}`, { method: "GET" });
+                const res = await resp.json();
+                console.log(`[BILLABLES] Response:`, res);
+                if (res.success) {
+                    const items = res.items || [];
+                    console.log(`[BILLABLES] Found ${items.length} items`);
+                    setBillableItems(items);
+                    // Auto-select all pending quantities by default
+                    const selection: Record<number, number> = {};
+                    items.forEach((it: any) => {
+                        selection[it.sequencia] = it.qtdPendente;
+                    });
+                    setSelectedBillItems(selection);
+                }
+            } catch (e: any) {
+                console.error('[BILLABLES] Fetch failed:', e.message);
+            } finally {
+                setFetchingBillables(false);
+            }
+        };
+
         // === Helper: Confirm Quote (sub-step 1) ===
         const handleConfirmQuote = async () => {
             setCheckoutLoading(true);
@@ -1369,10 +1429,13 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 const res = await resp.json();
                 if (res.success && res.confirmed) {
                     setPedidoNuUnico(res.nuUnicoPedido || null);
-                    setCheckoutMessage(res.message);
+                    setCheckoutMessage(isBudget ? "Orçamento confirmado! Agora proceda com a evolução para pedido." : "Pedido confirmado com sucesso!");
                     fetchQuoteStatus();
                     onRefreshProperties();
-                    setTimeout(() => setCheckoutSubStep(2), 1500);
+                    // Se era orçamento, NÃO avançar para o passo 2. Ficar no passo 1 para o faturamento.
+                    if (!isBudget) {
+                        setTimeout(() => setCheckoutSubStep(2), 1500);
+                    }
                 } else if (res.success && res.needsRelease) {
                     // Server says needs release
                     setCheckoutSubStep(0);
@@ -1417,19 +1480,21 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 setCheckoutError('Observação interna é obrigatória.');
                 return;
             }
-            const nunotaPedido = pedidoNuUnico || quoteStatus?.nunota;
-            if (!nunotaPedido) return;
+            const nunotaToUse = pedidoNuUnico || quoteStatus?.nunota;
+            if (!nunotaToUse) throw new Error('NUNOTA não identificado para preparação.');
+
+            console.log(`[handlePrepareOrder] Preparando NUNOTA ${nunotaToUse}...`);
 
             setCheckoutLoading(true);
             setCheckoutError(null);
             try {
-                // 1. Save obs
-                const obsResp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/obs/${nunotaPedido}`, {
+                // 1. Salvar Observação
+                const obsResp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/obs/${nunotaToUse}`, {
                     method: "PUT",
                     body: { obs: obsInterna }
                 });
                 const obsRes = await obsResp.json();
-                if (!obsRes.success) throw new Error(obsRes.error || 'Falha ao salvar obs');
+                if (!obsRes.success) throw new Error(obsRes.error || 'Falha ao salvar observação');
 
                 // 2. Attach file or PDF
                 if (attachmentMethod === 'pdf') {
@@ -1437,7 +1502,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                         method: "POST",
                         body: {
                             dealId: context.crm.objectId,
-                            nunotaPedido: nunotaPedido,
+                            nunotaPedido: nunotaToUse,
                             nunotaOrcamento: quoteStatus?.nunota
                         }
                     });
@@ -1447,7 +1512,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                     const anexoResp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/anexar`, {
                         method: "POST",
                         body: {
-                            nunota: nunotaPedido,
+                            nunota: nunotaToUse,
                             descricao: 'Pedido Compra',
                             fileBase64: pedidoAnexoBase64,
                             fileName: pedidoAnexoName
@@ -1470,23 +1535,78 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
         // === Helper: Confirm Order (sub-step 3) ===
         const handleConfirmOrder = async () => {
-            const nunotaPedido = pedidoNuUnico || quoteStatus?.nunota;
-            if (!nunotaPedido) return;
+            const nunotaPedido = pedidoNuUnico || (isBudget ? null : quoteStatus?.nunota);
+            
+            if (!nunotaPedido) {
+                setCheckoutError("Número único do pedido não identificado. Certifique-se de que o faturamento (evolução) foi concluído.");
+                return;
+            }
+
+            // Se já estiver confirmado nos dados locais, não precisa chamar API
+            if (quoteStatus?.isConfirmed && !isBudget) {
+                console.log(`[handleConfirmOrder] Nota ${nunotaPedido} já consta como confirmada. Avançando...`);
+                setCheckoutMessage('Este pedido já está confirmado! Seguindo para próxima etapa...');
+                setTimeout(() => fetchQuoteStatus(), 1500);
+                return;
+            }
+
+            console.log(`[handleConfirmOrder] Confirmando NUNOTA ${nunotaPedido}...`);
 
             setCheckoutLoading(true);
             setCheckoutError(null);
             try {
-                const resp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/confirmar/${nunotaPedido}`, {
+                const body = { dealId: context.crm.objectId, nunota: nunotaPedido };
+                const resp = await hubspot.fetch(`${BASE_API_URL}/hubspot/confirm-quote`, { method: "POST", body });
+                const res = await resp.json();
+                if (res.success) {
+                    setCheckoutMessage(isBudget ? "Orçamento confirmado com sucesso!" : "Pedido confirmado com sucesso!");
+                    fetchQuoteStatus();
+                    onRefreshProperties();
+                } else {
+                    throw new Error(res.error || 'Falha na confirmação');
+                }
+            } catch (err: any) {
+                setCheckoutError(err.message);
+            } finally {
+                setCheckoutLoading(false);
+            }
+        };
+
+        // === Helper: Bill/Evolve Order (Alternative Flow) ===
+        const handleBillOrder = async () => {
+            if (!quoteStatus?.nunota) return;
+            setCheckoutLoading(true);
+            setCheckoutError(null);
+            try {
+                const items = Object.entries(selectedBillItems)
+                    .filter(([_, qty]) => qty > 0)
+                    .map(([seq, qty]) => ({ sequencia: Number(seq), quantidade: qty }));
+
+                if (isPartialBill && items.length === 0) throw new Error("Selecione ao menos um item com quantidade positiva para faturar.");
+
+                const targetTOP = !pedidoNuUnico ? 1010 : 1100;
+
+                const resp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/faturar`, {
                     method: "POST",
-                    body: { dealId: context.crm.objectId }
+                    body: {
+                        dealId: context.crm.objectId,
+                        nunota: quoteStatus.nunota,
+                        targetTOP,
+                        items: isPartialBill ? items : undefined
+                    }
                 });
                 const res = await resp.json();
                 if (res.success) {
                     setCheckoutMessage(res.message);
-                    fetchQuoteStatus();
+                    if (targetTOP === 1010) {
+                        setPedidoNuUnico(res.nuFaturamento);
+                        setTimeout(() => setCheckoutSubStep(2), 1500);
+                    } else {
+                        setTimeout(() => fetchQuoteStatus(), 1500);
+                    }
                     onRefreshProperties();
                 } else {
-                    throw new Error(res.error || 'Falha ao confirmar pedido');
+                    throw new Error(res.error || 'Falha no faturar');
                 }
             } catch (e: any) {
                 setCheckoutError(e.message);
@@ -1495,35 +1615,71 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             }
         };
 
-        // === Sub-step labels ===
-        const subStepNames = needsRelease
-            ? ['Liberação', 'Confirmar Orçamento', 'Preparar Pedido', 'Confirmar Pedido']
-            : ['Confirmar Orçamento', 'Preparar Pedido', 'Confirmar Pedido'];
-        const displaySubStep = needsRelease ? checkoutSubStep : checkoutSubStep - 1;
+        // === Sub-step logic for indicator ===
+        const isBudget = quoteStatus?.dealtype === '999';
+        const isOrder = quoteStatus?.dealtype === '1010';
+        const isNFe = quoteStatus?.dealtype === '1100';
+
+        const subStepNames = [
+            'Evolução (1010)',
+            'Preparação',
+            'Confirmação',
+            'Faturamento (1100)'
+        ];
+
+        // Safely determine the effective sub-step based on business rules.
+        // Rule: We MUST stay in Step 1 (Evolução) if we don't have a valid unique order number (pedidoNuUnico).
+        const effectiveSubStep = (() => {
+            if (checkoutSubStep === 0 && needsRelease) return 0;
+
+            const hasNoValidPedido = !pedidoNuUnico || pedidoNuUnico === '--' || pedidoNuUnico === '0';
+            
+            // If we're missing the order ID, we can't be in Preparation (2) or Confirmation (3)
+            if (hasNoValidPedido && checkoutSubStep >= 2) {
+                return 1;
+            }
+
+            // Forced step 1 for budgets without a generated order
+            if (isBudget && hasNoValidPedido) return 1;
+
+            return checkoutSubStep;
+        })();
+
+        let displaySubStep = 0;
+        if (effectiveSubStep === 1) {
+            displaySubStep = 0; // Evolução (1010)
+        } else if (effectiveSubStep === 2) {
+            displaySubStep = 1; // Preparação
+        } else if (effectiveSubStep === 3) {
+            displaySubStep = 2; // Confirmação
+        } else if (isOrder && quoteStatus?.isConfirmed && !isBudget) {
+            displaySubStep = 3; // Faturamento (1100)
+        } else if (isNFe) {
+            displaySubStep = 3; // Mantém no último step (Faturamento)
+        }
 
         return (
             <Flex direction="column" gap="md">
                 <Tile>
                     <Flex direction="column" gap="md">
 
-                        {/* === ESTADO: JÁ CONFIRMADO === */}
-                        {quoteStatus?.isOrderConfirmed ? (
+                        {/* === ESTADO: FINALIZADO (NFe Gerada) === */}
+                        {isNFe ? (
                             <Flex direction="column" gap="md">
                                 <Flex justify="between" align="center">
-                                    <Heading>📋 Resumo do Fechamento</Heading>
-                                    <Tag variant="success">✅ Confirmado</Tag>
+                                    <Heading>📋 Resumo do Faturamento</Heading>
+                                    <Tag variant="success">✅ NF-e Gerada</Tag>
                                 </Flex>
                                 <Divider />
 
-                                {/* Bloco NUNOTA + dados-chave */}
                                 <Flex gap="md" wrap="wrap">
                                     <Flex direction="column" gap="extra-small">
-                                        <Text variant="microcopy">Nro. Nota Sankhya</Text>
+                                        <Text variant="microcopy">Nro. NF-e Sankhya</Text>
                                         <Text format={{ fontWeight: "bold" }}>#{quoteStatus?.nrNota || quoteStatus?.nunota}</Text>
                                     </Flex>
                                     <Flex direction="column" gap="extra-small">
-                                        <Text variant="microcopy">Itens Faturados</Text>
-                                        <Text format={{ fontWeight: "bold" }}>{qtdItens} produto{qtdItens !== 1 ? 's' : ''}</Text>
+                                        <Text variant="microcopy">Status</Text>
+                                        <Text format={{ fontWeight: "bold" }}>{quoteStatus?.statusNota === 'L' ? 'Confirmada' : 'Aguardando'}</Text>
                                     </Flex>
                                     <Flex direction="column" gap="extra-small">
                                         <Text variant="microcopy">Valor Total</Text>
@@ -1533,46 +1689,8 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
                                 <Divider />
 
-                                {/* Análise financeira final */}
-                                {profitability && (
-                                    <Flex direction="column" gap="sm">
-                                        <Text format={{ fontWeight: "bold" }}>📊 Análise Financeira Final</Text>
-                                        <Flex gap="md" wrap="wrap">
-                                            <Flex direction="column" gap="extra-small">
-                                                <Text variant="microcopy">Faturamento</Text>
-                                                <Text>{formatCurrency(profitability.faturamento)}</Text>
-                                            </Flex>
-                                            <Flex direction="column" gap="extra-small">
-                                                <Text variant="microcopy">Custo Mercadoria</Text>
-                                                <Text>{formatCurrency(profitability.custoMercadoriaVendida)}</Text>
-                                            </Flex>
-                                            <Flex direction="column" gap="extra-small">
-                                                <Text variant="microcopy">Gasto Variável</Text>
-                                                <Text>{formatCurrency(profitability.gastoVariavel)}</Text>
-                                            </Flex>
-                                            <Flex direction="column" gap="extra-small">
-                                                <Text variant="microcopy">Gasto Fixo</Text>
-                                                <Text>{formatCurrency(profitability.gastoFixo)}</Text>
-                                            </Flex>
-                                            <Flex direction="column" gap="extra-small">
-                                                <Text variant="microcopy">Margem de Contribuição</Text>
-                                                <Text>{formatCurrency(profitability.margemContribuicao)}</Text>
-                                            </Flex>
-                                            <Flex direction="column" gap="extra-small">
-                                                <Text variant="microcopy">Lucro Líquido</Text>
-                                                <Tag variant={profitability.isRentavel ? "success" : "error"}>
-                                                    {profitability.isRentavel ? "✅" : "❌"} {formatCurrency(profitability.lucro)} ({profitability.percentLucro.toFixed(2)}%)
-                                                </Tag>
-                                            </Flex>
-                                        </Flex>
-                                    </Flex>
-                                )}
-
-                                <Divider />
-
-                                {/* Banner de sucesso final */}
-                                <Alert title="Orçamento Confirmado e Faturado" variant="success">
-                                    Este orçamento foi confirmado com sucesso no Sankhya ERP. O PDF do orçamento foi gerado e anexado a este negócio. Tudo pronto!
+                                <Alert title="Processo Concluído" variant="success">
+                                    A Nota Fiscal de Venda foi gerada com sucesso. O fluxo de faturamento da Tradipar foi finalizado para este negócio.
                                 </Alert>
                             </Flex>
 
@@ -1585,7 +1703,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                 </Flex>
 
                                 <StepIndicator
-                                    currentStep={Math.max(0, displaySubStep)}
+                                    currentStep={Math.min(subStepNames.length - 1, Math.max(0, displaySubStep))}
                                     stepNames={subStepNames}
                                 />
 
@@ -1618,7 +1736,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                 {checkoutMessage && <Alert title="Info" variant="success">{checkoutMessage}</Alert>}
 
                                 {/* ========== SUB-STEP 0: LIBERAÇÃO ========== */}
-                                {checkoutSubStep === 0 && needsRelease && (
+                                {effectiveSubStep === 0 && needsRelease && (
                                     <Flex direction="column" gap="md">
                                         <Alert title="Liberação Necessária" variant="warning">
                                             Lucro atual: {formatCurrency(profitability!.lucro)} — Mínimo exigido: {formatPercent(profitability!.percentLucro)}. É necessário solicitar liberação.
@@ -1685,36 +1803,126 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                     </Flex>
                                 )}
 
-                                {/* ========== SUB-STEP 1: CONFIRMAR ORÇAMENTO ========== */}
-                                {checkoutSubStep === 1 && (
-                                    <Flex direction="column" gap="md" align="center">
-                                        <Text format={{ fontWeight: "bold" }}>Confirmar orçamento TOP 999 no Sankhya ERP</Text>
-                                        <Text variant="microcopy">
-                                            Ao confirmar, o PDF será gerado, a etapa do negócio será atualizada e o pedido TOP 1010 será criado automaticamente.
-                                        </Text>
-
-                                        <Flex gap="md" wrap="wrap" justify="center">
-                                            <Button variant="secondary" onClick={() => handleSaveAmount()}>✓ Sincronizar Valores</Button>
-                                            <Button
-                                                variant="primary"
-                                                onClick={handleConfirmQuote}
-                                                disabled={checkoutLoading}
-                                            >
-                                                {checkoutLoading ? 'Confirmando...' : '✅ Confirmar Orçamento no Sankhya'}
-                                            </Button>
+                                {/* ========== SUB-STEP 1: CONFIRMAR OU EVOLUIR ========== */}
+                                {effectiveSubStep === 1 && (
+                                    <Flex direction="column" gap="md">
+                                        <Flex direction="column" gap="extra-small" align="center">
+                                    <Heading>🚀 {(isBudget || !pedidoNuUnico || pedidoNuUnico === '--') ? "Gerar Pedido de Venda (1010)" : "Emitir Nota Fiscal (1100)"}</Heading>
+                                            <Text variant="microcopy">
+                                                {(isBudget || !pedidoNuUnico || pedidoNuUnico === '--') 
+                                                  ? `O Orçamento #${quoteStatus?.nunota} está confirmado e pronto para virar um pedido oficial.`
+                                                  : `O Pedido #${quoteStatus?.nunota} está pronto para ser faturado e gerar a NF-e.`}
+                                            </Text>
                                         </Flex>
 
-                                        {saveSuccess && <Alert title="Sucesso" variant="success">Valores sincronizados com o HubSpot!</Alert>}
+                                        {!quoteStatus?.isConfirmed ? (
+                                            <Alert title="Confirmação Necessária" variant="warning">
+                                                Este {isBudget ? 'orçamento' : 'pedido'} ainda não foi confirmado no Sankhya. Clique no botão abaixo para confirmá-lo e prosseguir com o faturamento.
+                                                <Button variant="primary" onClick={handleConfirmQuote} disabled={checkoutLoading}>
+                                                    {checkoutLoading ? 'Confirmando...' : `✅ Confirmar ${isBudget ? 'Orçamento (999)' : 'Pedido (1010)'}`}
+                                                </Button>
+                                            </Alert>
+                                        ) : (
+                                            <Flex direction="column" gap="md">
+                                                <Alert title="Pronto para Faturar" variant="success">
+                                                    {isBudget ? 'Orçamento' : 'Pedido'} #( {quoteStatus?.nunota} ) confirmado! Agora você pode gerar o {isBudget ? 'pedido (1010)' : 'NF-e (1100)'}.
+                                                </Alert>
+
+                                                <Flex justify="between" align="center">
+                                                    <Text format={{ fontWeight: "bold" }}>Deseja selecionar itens para faturamento parcial?</Text>
+                                                    <Button 
+                                                        variant={isPartialBill ? "secondary" : "primary"}
+                                                        onClick={() => {
+                                                            const newValue = !isPartialBill;
+                                                            setIsPartialBill(newValue);
+                                                            if (newValue && billableItems.length === 0) fetchBillableItems();
+                                                        }}
+                                                    >
+                                                        {isPartialBill ? "🔄 Faturar Tudo" : "📋 Selecionar Itens"}
+                                                    </Button>
+                                                </Flex>
+
+                                                {isPartialBill && (
+                                                    <Box>
+                                                        {fetchingBillables ? (
+                                                            <LoadingSpinner label="Buscando itens do Sankhya..." />
+                                                        ) : (
+                                                            <Box>
+                                                                <Table>
+                                                                    <TableHead>
+                                                                        <TableRow>
+                                                                            <TableHeader>Item</TableHeader>
+                                                                            <TableHeader>Pendente</TableHeader>
+                                                                            <TableHeader>Faturar</TableHeader>
+                                                                            <TableHeader>Ação</TableHeader>
+                                                                        </TableRow>
+                                                                    </TableHead>
+                                                                    <TableBody>
+                                                                        {billableItems.map(it => {
+                                                                            const isRemoved = (selectedBillItems[it.sequencia] || 0) <= 0;
+                                                                            return (
+                                                                                <TableRow key={it.sequencia}>
+                                                                                    <TableCell>
+                                                                                        <Flex direction="column">
+                                                                                            <Text format={isRemoved ? { italic: true } : { fontWeight: "bold" }}>{it.descrProd}</Text>
+                                                                                            <Text variant="microcopy">Cód: {it.codProd} | Unit: {formatCurrency(it.vlrUnit)}</Text>
+                                                                                        </Flex>
+                                                                                    </TableCell>
+                                                                                    <TableCell>{it.qtdPendente}</TableCell>
+                                                                                    <TableCell>
+                                                                                        <NumberInput
+                                                                                            label=""
+                                                                                            name={`qty-${it.sequencia}`}
+                                                                                            value={selectedBillItems[it.sequencia] || 0}
+                                                                                            onChange={(val) => setSelectedBillItems(prev => ({ ...prev, [it.sequencia]: val || 0 }))}
+                                                                                            readOnly={isRemoved}
+                                                                                        />
+                                                                                    </TableCell>
+                                                                                    <TableCell>
+                                                                                        <Button 
+                                                                                            variant={isRemoved ? "secondary" : "destructive"} 
+                                                                                            size="xs"
+                                                                                            onClick={() => {
+                                                                                                const newQty = isRemoved ? it.qtdPendente : 0;
+                                                                                                setSelectedBillItems(prev => ({ ...prev, [it.sequencia]: newQty }));
+                                                                                            }}
+                                                                                        >
+                                                                                            {isRemoved ? "Incluir" : "Remover"}
+                                                                                        </Button>
+                                                                                    </TableCell>
+                                                                                </TableRow>
+                                                                            );
+                                                                        })}
+                                                                    </TableBody>
+                                                                </Table>
+                                                            </Box>
+                                                        )}
+                                                    </Box>
+                                                )}
+
+                                                <Divider />
+                                                
+                                                <Button 
+                                                    variant="primary" 
+                                                    onClick={handleBillOrder} 
+                                                    disabled={checkoutLoading || (isPartialBill && billableItems.length === 0)}
+                                                >
+                                                    {checkoutLoading ? 'Processando...' : `🚀 ${(isBudget || !pedidoNuUnico || pedidoNuUnico === '--') ? 'Criar Pedido (1010)' : 'Faturar para NF-e (1100)'} ${isPartialBill ? 'Parcial' : ''}`}
+                                                </Button>
+                                            </Flex>
+                                        )}
                                     </Flex>
                                 )}
 
-                                {/* ========== SUB-STEP 2: PREPARAR PEDIDO ========== */}
-                                {checkoutSubStep === 2 && (
+                                            {/* ========== SUB-STEP 2: PREPARAR PEDIDO ========== */}
+                                            {effectiveSubStep === 2 && (
                                     <Flex direction="column" gap="md">
-                                        <Text format={{ fontWeight: "bold" }}>📋 Preparar Pedido TOP 1010</Text>
-                                        {pedidoNuUnico && (
-                                            <Text variant="microcopy">Pedido gerado: NUNOTA #{pedidoNuUnico}</Text>
-                                        )}
+                                        <Heading>📋 Preparar Pedido TOP 1010</Heading>
+                                        <Text variant="microcopy">
+                                            {pedidoNuUnico 
+                                                ? `✅ Novo Pedido Gerado: #${pedidoNuUnico}` 
+                                                : `🛠️ Configurando Pedido: #${quoteStatus?.nunota}`}
+                                        </Text>
 
                                         <Divider />
 
@@ -1762,7 +1970,6 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                                 </Button>
                                             </Flex>
                                         )}
-
                                         <Alert title={attachmentMethod === 'pdf' ? "Gerar Automático" : "Arquivo necessário"} variant="info">
                                             {attachmentMethod === 'pdf'
                                                 ? "O backend irá gerar o PDF da top de orçamento 999 no Sankhya, anexá-lo ao Deal do HubSpot, e vinculá-lo ao novo pedido TOP 1010 automaticamente."
@@ -1780,11 +1987,11 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                 )}
 
                                 {/* ========== SUB-STEP 3: CONFIRMAR PEDIDO ========== */}
-                                {checkoutSubStep === 3 && (
+                                {effectiveSubStep === 3 && (
                                     <Flex direction="column" gap="md" align="center">
-                                        <Text format={{ fontWeight: "bold" }}>✅ Confirmar Pedido TOP 1010 no Sankhya</Text>
+                                        <Text format={{ fontWeight: "bold" }}>✅ Confirmar Pedido no Sankhya</Text>
                                         <Text variant="microcopy">
-                                            Ao confirmar, o status da nota será atualizado, o PDF será gerado e a etapa do negócio avançará para "Pedido Confirmado".
+                                            Prepare o pedido confirmando-o no Sankhya para que ele possa ser faturado posteriormente para NF-e.
                                         </Text>
 
                                         <Button
@@ -1792,7 +1999,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                             onClick={handleConfirmOrder}
                                             disabled={checkoutLoading}
                                         >
-                                            {checkoutLoading ? 'Confirmando...' : '✅ Confirmar Pedido no Sankhya'}
+                                            {checkoutLoading ? 'Confirmando...' : `✅ Finalizar e Confirmar Pedido (#${pedidoNuUnico || quoteStatus?.nunota})`}
                                         </Button>
                                     </Flex>
                                 )}
