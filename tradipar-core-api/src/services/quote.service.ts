@@ -146,6 +146,7 @@ class QuoteService {
     try {
       await hubspotApi.updateDeal(dealId, { 
         orcamento_sankhya: nunota.toString(),
+        sankhya_nunota: "0",
         dealstage: 'qualifiedtobuy'
       });
       hubspotUpdateSuccess = true;
@@ -176,6 +177,7 @@ class QuoteService {
 
   public async getProfitabilityInternal(nunota: number | string, codemp: number | string | null = null): Promise<ProfitabilityResponse> {
     try {
+      console.log(`[PROFITABILITY] Fetching for NUNOTA ${nunota}, CODEMP ${codemp}...`);
       const paramsObj: any = { nuNota: Number(nunota), recalcular: "true", recalcularRentabilidade: "true", atualizarRentabilidade: true };
       if (codemp) paramsObj.CODEMP = Number(codemp);
 
@@ -245,7 +247,7 @@ class QuoteService {
     const props = dealResp.data.properties;
     
     const dealname = props.dealname;
-    const orcNunota = props.orcamento_sankhya || props.sankhya_nunota;
+    let orcNunota = props.orcamento_sankhya || props.sankhya_nunota;
     const pedNunota = props.sankhya_nu_unico_pedido;
     const nfeNunota = props.sankhya_nu_unico_nfe;
     let effectiveNuUnicoPedido = pedNunota;
@@ -284,19 +286,27 @@ class QuoteService {
         
         // Added NUMPEDIDO to discovery query (r[4])
         const linkageSql = `
-            SELECT NUNOTA, CODTIPOPER, STATUSNOTA, NUMNOTA, NUMPEDIDO
+            SELECT NUNOTA, CODTIPOPER, STATUSNOTA, NUMNOTA, NUMPEDIDO, VLRNOTA, PENDENTE, CODEMP
             FROM TGFCAB 
-            WHERE AD_VINCULO LIKE '${orcNunota}%' 
+            WHERE NUNOTA = ${Number(orcNunota) || 0}
+            OR NUNOTA = '${String(orcNunota).trim()}'
+            OR AD_VINCULO LIKE '${String(orcNunota).trim()}%' 
             ${allChildrenIds.length > 0 ? `OR NUNOTA IN (${allChildrenIds.join(',')})` : ''}
             ORDER BY DTNEG DESC, NUNOTA DESC
         `;
+        console.log(`[getQuoteStatus] Unified SQL for ${orcNunota}: ${linkageSql}`);
         
         const detailsResp = await sankhyaApi.post<any>('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
             serviceName: "DbExplorerSP.executeQuery", requestBody: { sql: linkageSql }
         });
+
+        if (detailsResp.data.status !== "1") {
+            console.error(`[getQuoteStatus] SQL Error for ${orcNunota}: ${detailsResp.data.statusMessage || 'Unknown Error'}`);
+        }
+
         childrenDetails = getRows(detailsResp);
 
-        console.log(`[getQuoteStatus] Discovery for ${orcNunota}: found ${childrenDetails.length} related documents.`);
+        console.log(`[getQuoteStatus] Discovery Result for ${orcNunota}: ${JSON.stringify(childrenDetails)}`);
         console.log(`[getQuoteStatus] Current HS State: ${JSON.stringify(props)}`);
 
         let updateNeeded = false;
@@ -358,30 +368,96 @@ class QuoteService {
         }
 
         // --- Standard status check for UI ---
-        const quoteSql = `SELECT STATUSNOTA, CODTIPOPER, NUMNOTA FROM TGFCAB WHERE NUNOTA = ${orcNunota}`;
-        const quoteResp = await sankhyaApi.post<any>('/gateway/v1/mge/service.sbr?serviceName=DbExplorerSP.executeQuery&outputType=json', {
-            serviceName: "DbExplorerSP.executeQuery", requestBody: { sql: quoteSql }
-        });
-        const quoteRow = getRows(quoteResp)[0];
+        // Em vez de rodar um SQL novo, procuramos o orçamento original dentro dos resultados da descoberta (Unified)
+        const quoteRow = childrenDetails.find(r => String(r[0]).trim() === String(orcNunota).trim());
+        console.log(`[getQuoteStatus] Main Row (NUNOTA ${orcNunota}) from Discovery: ${!!quoteRow}`);
         
         if (!quoteRow) {
             return {
                 success: true,
-                status: { dealId, dealname, hasQuote: true, nunota: Number(orcNunota), isConfirmed: false, buttonAction: "NONE", message: "Orçamento não encontrado no Sankhya." }
+                status: { dealId, dealname, hasQuote: true, nunota: Number(orcNunota), isConfirmed: false, buttonAction: "NONE", message: "Orçamento não encontrado no Sankhya (via Discovery)." }
             };
         }
 
-        const isConfirmed = quoteRow[0] === 'L' || quoteRow[0] === 'A';
-        const isOrderConfirmed = childrenDetails.some(r => r[2] === 'L' || r[2] === 'A');
+        // Mapeamento das colunas (Índices baseados na query linkageSql)
+        // 0:NUNOTA, 1:CODTIPOPER, 2:STATUSNOTA, 3:NUMNOTA, 4:NUMPEDIDO, 5:VLRNOTA, 6:CONFIRMADA, 7:CODEMP
+        const quoteNrNota = (quoteRow[3] && Number(quoteRow[3]) !== 0 && String(quoteRow[3]) !== String(orcNunota))
+            ? String(quoteRow[3])
+            : "0";
+
+        const vlrNota = parseFloat(quoteRow[5]) || 0;
+        // No Sankhya PENDENTE='N' significa CONFIRMADO='S'
+        const confirmada = quoteRow[6] === 'N' ? 'S' : 'N';
+        const codemp = quoteRow[7];
+
+        const isConfirmed = quoteNrNota !== "0" && (quoteRow[2] === 'L' || quoteRow[2] === 'A');
+        const isOrderConfirmed = childrenDetails.some(r => r[1] === 1010 && (r[2] === 'L' || r[2] === 'A'));
+
+        // --- AUTO-HEALING PDF: Enterprise Grade Set-and-Forget ---
+        // Detecta orçamentos confirmados (com NUMNOTA) e anexa PDF automaticamente
+        if (isConfirmed && quoteNrNota !== "0") {
+            try {
+                console.log(`[AUTO-HEALING PDF] Orçamento ${orcNunota} confirmado (NUMNOTA=${quoteNrNota}). Verificando anexo PDF...`);
+                const pdfResult = await this.attachPdfToHubspot(dealId, orcNunota);
+                if ((pdfResult as any).skipped) {
+                    console.log(`[AUTO-HEALING PDF] PDF já anexado anteriormente. Pulando.`);
+                } else {
+                    console.log(`[AUTO-HEALING PDF] PDF anexado com sucesso ao Deal ${dealId}.`);
+                }
+            } catch (pdfErr: any) {
+                console.warn(`[AUTO-HEALING PDF] Falha ao anexar PDF (não-bloqueante):`, pdfErr.message);
+            }
+        }
+
+        // --- PROFITABILITY (como no Alef) ---
+        let profitability = null;
+        let isRentavel = false;
+        let profitabilityError = null;
+
+        try {
+            console.log(`[getQuoteStatus] Fetching profitability for NUNOTA ${orcNunota}, CODEMP ${codemp}...`);
+            const profResult = await this.getProfitabilityInternal(Number(orcNunota), codemp);
+            if (profResult.success && profResult.profitability) {
+                profitability = profResult.profitability;
+                isRentavel = profitability.isRentavel;
+                console.log(`[getQuoteStatus] Profitability OK: Lucro=${profitability.lucro}, Rentável=${isRentavel}`);
+            } else {
+                console.warn(`[getQuoteStatus] Could not fetch profitability: ${profResult.error}`);
+                profitabilityError = profResult.error;
+            }
+        } catch (profErr: any) {
+            console.warn(`[getQuoteStatus] Exception fetching profitability: ${profErr.message}`);
+            profitabilityError = profErr.message;
+        }
+
+        // --- STRICT INTEGRITY SWEEP (Faxina Automática) ---
+        // Se o HubSpot contiver o ID Único (NUNOTA) no campo de número oficial (NUMNOTA), 
+        // e o Sankhya confirmar que o número oficial ainda é 0, limpamos o CRM.
+        const isMirroredAnomalous = 
+            (props.sankhya_nunota === String(orcNunota) || props.sankhya_nunota_final === String(orcNunota)) &&
+            quoteNrNota === "0";
+
+        if (isMirroredAnomalous) {
+            console.log(`[FAXINA] Detectada anomalia no Deal ${dealId}. Limpando espelhamento de ID único.`);
+            updateProps.sankhya_nunota = "0";
+            updateProps.sankhya_nunota_final = "";
+            updateNeeded = true;
+        } 
+        // Sync reverso: Se o Sankhya já tem um número real mas o HS ainda está em "0"
+        else if (quoteNrNota !== "0" && props.sankhya_nunota === "0") {
+            console.log(`[SYNC-REVERSO] Sincronizando número real ${quoteNrNota} para o HubSpot.`);
+            updateProps.sankhya_nunota = quoteNrNota;
+            updateNeeded = true;
+        }
 
         // Fallback chain for nrNota displayed in the card: 
         // 1. Discovery result (Order/NFe) 
         // 2. HubSpot Property (sankhya_nunota_final or sankhya_nu_nota_pedido)
-        // 3. Original Quote NUMNOTA
+        // 3. Official Sankhya Quote Number (normalized to "0" if unconfirmed)
         const finalNrNota = effectiveNrNota 
             || props.sankhya_nunota_final 
             || props.sankhya_nu_nota_pedido 
-            || String(quoteRow[2] || orcNunota);
+            || (quoteNrNota !== "0" ? quoteNrNota : null);
 
         return {
             success: true,
@@ -390,15 +466,25 @@ class QuoteService {
                 dealname,
                 hasQuote: true,
                 nunota: Number(orcNunota),
+                statusNota: quoteRow[0],
                 isConfirmed,
                 isOrderConfirmed,
+                vlrNota,
+                profitability,
+                profitabilityError,
+                isRentavel,
+                recalc_needed: (profitability && profitability.lucro === 0 && profitability.qtdItens > 0),
                 nuPedido: effectiveNuUnicoPedido,
-                nuUnicoPedido: effectiveNuUnicoPedido, // UI expects this for preparation logic
+                nuUnicoPedido: effectiveNuUnicoPedido,
                 nrNota: finalNrNota,
                 nuNfe: effectiveNuUnicoNfe,
                 dealtype: updateProps.dealtype || props.dealtype,
-                buttonAction: !isConfirmed ? "CONFIRM" : (effectiveNuUnicoPedido ? "BILL" : "NONE"),
-                buttonLabel: !isConfirmed ? "Confirmar Orçamento" : (effectiveNuUnicoPedido ? "Faturar Pedido" : "Aguardando Evolução"),
+                buttonAction: !isConfirmed 
+                    ? (isRentavel ? "CONFIRM_QUOTE" : "VIEW_QUOTE") 
+                    : (effectiveNuUnicoPedido ? "BILL" : "NONE"),
+                buttonLabel: !isConfirmed 
+                    ? (isRentavel ? "Confirmar Orçamento" : "Ver Orçamento") 
+                    : (effectiveNuUnicoPedido ? "Faturar Pedido" : "Aguardando Evolução"),
                 didUpdateHubSpot: updateNeeded
             }
         };
@@ -466,9 +552,37 @@ class QuoteService {
     const nrNotaPedido = pedidoRow?.[1] || null;
     const nrPedidoVenda = pedidoRow?.[2] || null;
 
+    // Gap 1 Fix: Auto-confirm the generated TOP 1010 order (se existir via trigger Sankhya)
+    if (nuUnicoPedido) {
+      console.log(`[PEDIDO] Auto-confirmando pedido gerado NUNOTA=${nuUnicoPedido}...`);
+      try {
+        const confirmPedidoResp = await sankhyaApi.post<any>('/gateway/v1/mgecom/service.sbr?serviceName=CACSP.confirmarNota&outputType=json', {
+          serviceName: "CACSP.confirmarNota",
+          requestBody: { nota: { NUNOTA: { "$": String(nuUnicoPedido) } } }
+        });
+
+        if (confirmPedidoResp.data.status === "1") {
+          console.log(`[PEDIDO] Confirmado com sucesso NUNOTA=${nuUnicoPedido}`);
+        } else {
+          const msg = confirmPedidoResp.data.statusMessage || 'Erro desconhecido';
+          const normalizedMsg = msg.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+          if (normalizedMsg.includes('ja foi confirmada') || normalizedMsg.includes('ja confirmada')) {
+            console.log(`[PEDIDO] NUNOTA=${nuUnicoPedido} já estava confirmado.`);
+          } else {
+            console.warn(`[PEDIDO] Falha ao confirmar NUNOTA=${nuUnicoPedido}: ${msg}`);
+          }
+        }
+      } catch (e: any) {
+        console.error(`[PEDIDO] Erro ao auto-confirmar NUNOTA=${nuUnicoPedido}:`, e.message);
+        // Non-blocking: continue with HubSpot update even if auto-confirm fails
+      }
+    }
+
+    const nrNotaSafe = (nrNota && Number(nrNota) !== 0 && String(nrNota) !== String(confirmedNunota)) ? String(nrNota) : "0";
+
     const dealProperties: any = {
       orcamento_sankhya: String(confirmedNunota),
-      sankhya_nunota: String(nrNota || confirmedNunota),
+      sankhya_nunota: nrNotaSafe,
       dealstage: 'qualifiedtobuy' 
     };
     if (nuUnicoPedido) {
@@ -485,6 +599,15 @@ class QuoteService {
     }
 
     await hubspotApi.updateDeal(dealId, dealProperties);
+
+    // Anexar PDF do orcamento ao Deal (nao-bloqueante)
+    try {
+      console.log(`[QUOTE CONFIRM] Anexando PDF do orcamento ${confirmedNunota} ao Deal...`);
+      await this.attachPdfToHubspot(dealId, confirmedNunota);
+      console.log(`[QUOTE CONFIRM] PDF anexado com sucesso.`);
+    } catch (pdfErr: any) {
+      console.warn(`[QUOTE CONFIRM] Falha ao anexar PDF (nao-bloqueante):`, pdfErr.message);
+    }
 
     return {
       success: true,
