@@ -9,6 +9,7 @@ class SankhyaAdapter {
   constructor() {
     this.api = axios.create({
       baseURL: ENV.SANKHYA.BASE_URL,
+      timeout: 15000,
     });
 
     // Request intercaptor to inject token

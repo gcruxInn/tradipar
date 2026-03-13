@@ -146,7 +146,7 @@ export class OrcamentoService {
     try {
       await hubspotApi.updateDeal(dealId, {
         orcamento_sankhya: nunota.toString(),
-        sankhya_nunota: numNota.toString(),
+        sankhya_nunota: "0",
         natureza_id: codNat.toString(),
         dealstage: 'qualifiedtobuy'
       });
@@ -221,33 +221,48 @@ export class OrcamentoService {
 
         const itemData: any = {
           NUNOTA: { "$": String(nunota) },
-          CODPROD: { "$": item.codProd },
-          QTDNEG: { "$": item.quantity },
-          VLRUNIT: { "$": item.currentPrice },
-          VLRTOT: { "$": (item.quantity * item.currentPrice) },
-          CODVOL: { "$": codVol },
-          CODLOCALORIG: { "$": codLocalOrig },
-          PERCDESC: { "$": 0 },
-          VLRDESC: { "$": 0 },
+          CODPROD: { "$": String(item.codProd) },
+          QTDNEG: { "$": String(item.quantity) },
+          VLRUNIT: { "$": String(item.currentPrice) },
+          VLRTOT: { "$": String(item.quantity * item.currentPrice) },
+          CODVOL: { "$": String(codVol) },
+          CODLOCALORIG: { "$": String(codLocalOrig) },
+          PERCDESC: { "$": "0" },
+          VLRDESC: { "$": "0" },
           CONTROLE: { "$": item.controle || "" }
         };
 
         if (action === "UPDATE" && existing) {
-          itemData.SEQUENCIA = { "$": existing.sequencia };
+          itemData.SEQUENCIA = { "$": String(existing.sequencia) };
+        } else {
+          itemData.SEQUENCIA = { "$": "" }; // For CREATE, Sankhya expects empty string PK
         }
 
         const insertPayload = {
           serviceName: "CACSP.incluirAlterarItemNota",
-          requestBody: { nota: { NUNOTA: String(nunota), itens: { INFORMARPRECO: "True", item: itemData } } }
+          requestBody: { 
+            nota: { 
+              // NOVO: No Sankhya JSON, passar NUNOTA como propriedade direta do objeto 'nota' 
+              // simula o atributo XML <nota NUNOTA="xxx"> que o CACSP exige para itens.
+              NUNOTA: String(nunota), 
+              itens: { 
+                INFORMARPRECO: "True", 
+                item: itemData 
+              } 
+            } 
+          }
         };
+
+        console.log(`[SYNC-PAYLOAD] ${action} item ${key}: ${JSON.stringify(insertPayload).substring(0, 500)}`);
 
         const resp = await sankhyaApi.post<any>(`/gateway/v1/mgecom/service.sbr?serviceName=CACSP.incluirAlterarItemNota&outputType=json`, insertPayload);
         if (resp.data.status !== "1") throw new Error(resp.data.statusMessage || "Erro desconhecido via CACSP");
         
       } catch (err: any) {
-        const backendError = err.response?.data ? JSON.stringify(err.response.data) : err.message;
-        console.error(`[OrcamentoService] Error details for ${action} item ${key}:`, backendError);
-        errors.push(`Falha ao ${action} item ${key}: ${err.message} | ${backendError}`);
+        // Extract the cleanest possible error message for the UI
+        const rawError = err.response?.data?.statusMessage || err.response?.data?.message || err.message || "Erro desconhecido";
+        console.error(`[OrcamentoService] Error details for ${action} item ${key}:`, rawError);
+        errors.push(`⚠️ Item ${item.name || key}: ${rawError}`);
       }
     }
 

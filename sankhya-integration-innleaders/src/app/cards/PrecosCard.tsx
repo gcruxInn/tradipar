@@ -150,6 +150,9 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     const [quoteError, setQuoteError] = useState<string | null>(null);
     const [quoteSuccess, setQuoteSuccess] = useState<string | null>(null);
 
+    // Record Initialization State
+    const [recordReady, setRecordReady] = useState(false);
+
     // Rentabilidade Alert Actions
     const handleViewRentabilidade = (item: ItemData) => {
         const actualRentab = optimisticProfitabilities[item.id] !== undefined ? optimisticProfitabilities[item.id] : item.sankhyaProfitability;
@@ -334,23 +337,38 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     // Initial Load
     useEffect(() => {
         const loadInitialData = async () => {
-            fetchPrices();
-            fetchQuoteStatus();
-
-            // Explicitly fetch company ID to ensure context for stock tags
+            console.log("[HS-HANDSHAKE] Initializing Card for Deal:", context.crm.objectId);
+            
             try {
                 if (actions && actions.fetchCrmObjectProperties) {
-                    const props = await actions.fetchCrmObjectProperties(['codemp_sankhya', 'parceiro']);
-                    if (props && (props.codemp_sankhya || props.parceiro)) {
-                        setData(prev => prev ? { ...prev, codEmp: props.codemp_sankhya, codParceiro: props.parceiro } : { items: [], currentAmount: "0", currentStage: "", codEmp: props.codemp_sankhya, codParceiro: props.parceiro });
+                    // Force wait for HubSpot properties load before starting pricing logic
+                    const props = await actions.fetchCrmObjectProperties(['codemp_sankhya', 'parceiro', 'dealname']);
+                    
+                    if (props) {
+                        setRecordReady(true);
+                        // Start backend fetches sequentially
+                        fetchPrices();
+                        fetchQuoteStatus();
+                        
+                        // Update local data context with HS props
+                        if (props.codemp_sankhya || props.parceiro) {
+                            setData(prev => prev ? { ...prev, codEmp: props.codemp_sankhya, codParceiro: props.parceiro } : { items: [], currentAmount: "0", currentStage: "", codEmp: props.codemp_sankhya, codParceiro: props.parceiro });
+                        }
                     }
+                } else {
+                    setRecordReady(true);
+                    fetchPrices();
+                    fetchQuoteStatus();
                 }
             } catch (e) {
-                console.error("Failed to fetch codemp:", e);
+                console.error("[HS-HANDSHAKE] Error during record initialization:", e);
+                setRecordReady(true);
+                fetchPrices();
+                fetchQuoteStatus();
             }
         };
         loadInitialData();
-    }, [context.crm.objectId]); // removed onRefreshProperties/actions from dependency to avoid loop
+    }, [context.crm.objectId]);
 
     useEffect(() => {
         if (data?.items) {
@@ -999,25 +1017,37 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
             if (res.success) {
                 if (!silent) {
-                    setSyncResult({ success: true, message: "Sincronizado com sucesso!" });
-                    setTimeout(() => setSyncResult(null), 3000);
+                    setSyncResult({ success: true, message: "✅ Sincronizado com sucesso!" });
+                    setTimeout(() => setSyncResult(null), 5000);
                 }
+                
+                // Se o backend já devolveu o status (mais eficiente), atualiza o estado local
+                if (res.quoteStatus) {
+                    setQuoteStatus(res.quoteStatus);
+                } else {
+                    fetchQuoteStatus();
+                }
+
                 fetchPrices();
-                fetchQuoteStatus(); // Atualiza Análise de Rentabilidade
             } else {
                 const errorMessage = res.message || res.error || "Erro na sincronização.";
-                const details = res.errors ? ` Detalhes: ${res.errors.join(" | ")}` : "";
+                const details = res.errors?.length ? `\n${res.errors.join("\n")}` : "";
                 const finalMessage = errorMessage + details;
 
                 if (!silent) {
                     setSyncResult({ success: false, message: finalMessage });
                 } else {
-                    actions.addAlert({ type: "warning", title: "Erro na sincronização automática", message: finalMessage });
+                    actions.addAlert({ type: "danger", title: "Falha na Sincronização", message: finalMessage });
                 }
             }
         } catch (e: any) {
+            // hubspot.fetch pode lançar exceção em status não-2xx.
+            // Tentamos extrair a mensagem do body mesmo assim.
+            const fallbackMsg = e.message || "Erro de comunicação com o servidor.";
             if (!silent) {
-                setSyncResult({ success: false, message: e.message });
+                setSyncResult({ success: false, message: `❌ ${fallbackMsg}` });
+            } else {
+                actions.addAlert({ type: "danger", title: "Erro de Sincronização", message: fallbackMsg });
             }
         } finally {
             setSyncing(false);
@@ -1031,13 +1061,21 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
         if (!quoteStatus?.nunota || syncing) return;
 
-        // Background silent sync
+        // Background silent sync — but still surface errors
         hubspot.fetch(`${BASE_API_URL}/hubspot/sync-quote-items`, {
             method: "POST",
             body: { dealId: context.crm.objectId, nunota: quoteStatus.nunota }
         }).then((resp) => resp.json()).then((res) => {
-            if (res.success) fetchPrices();
-        }).catch(err => console.error(err));
+            if (res.success) {
+                fetchPrices();
+                fetchQuoteStatus();
+            } else {
+                const details = res.errors?.length ? ` ${res.errors.join(" | ")}` : "";
+                actions.addAlert({ type: "danger", title: "Falha na Sincronização", message: (res.message || "Erro") + details });
+            }
+        }).catch(err => {
+            actions.addAlert({ type: "danger", title: "Erro de Sincronização", message: err.message });
+        });
     };
 
     const renderStep2 = () => {
@@ -2022,7 +2060,8 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         </Flex>
     );
 
-    if (loading) return <LoadingSpinner label="Carregando Hub Comercial..." />;
+    if (!recordReady) return <LoadingSpinner label="Lendo dados do Negócio..." showLabel />;
+    if (loading) return <LoadingSpinner label="Conectando ao Sankhya Om..." showLabel />;
 
     if (error) return (
         <Flex direction="column" gap="sm">
