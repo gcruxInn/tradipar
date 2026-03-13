@@ -15,6 +15,9 @@ exports.ENV = {
         BASE_URL: process.env.SANKHYA_BASE_URL || 'https://api.sandbox.sankhya.com.br'
     },
     HUBSPOT: {
-        ACCESS_TOKEN: process.env.HUBSPOT_ACCESS_TOKEN || ''
+        ACCESS_TOKEN: process.env.HUBSPOT_ACCESS_TOKEN || '',
+        CLIENT_ID: process.env.HUBSPOT_CLIENT_ID || '',
+        CLIENT_SECRET: process.env.HUBSPOT_CLIENT_SECRET || '',
+        REFRESH_TOKEN: process.env.HUBSPOT_REFRESH_TOKEN || ''
     }
 };

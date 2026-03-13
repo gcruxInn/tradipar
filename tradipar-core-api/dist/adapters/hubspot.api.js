@@ -8,14 +8,78 @@ const axios_1 = __importDefault(require("axios"));
 const env_1 = require("../config/env");
 class HubSpotAdapter {
     api;
+    token = null;
+    tokenExpiry = null;
+    tokenRefreshPromise = null;
     constructor() {
         this.api = axios_1.default.create({
             baseURL: 'https://api.hubapi.com',
             headers: {
-                'Authorization': `Bearer ${env_1.ENV.HUBSPOT.ACCESS_TOKEN}`,
                 'Content-Type': 'application/json'
             }
         });
+        // Add request interceptor for dynamic token injection
+        this.api.interceptors.request.use(async (config) => {
+            const token = await this.getValidToken();
+            config.headers.Authorization = `Bearer ${token}`;
+            return config;
+        });
+    }
+    /**
+     * Determines if OAuth2 refresh is available (all required vars present)
+     */
+    isOAuth2Available() {
+        return !!(env_1.ENV.HUBSPOT.CLIENT_ID && env_1.ENV.HUBSPOT.CLIENT_SECRET && env_1.ENV.HUBSPOT.REFRESH_TOKEN);
+    }
+    /**
+     * Fetches a new access token using OAuth2 refresh_token grant
+     */
+    async fetchNewToken() {
+        if (!this.isOAuth2Available()) {
+            throw new Error('[HUBSPOT] OAuth2 credentials not configured. Cannot refresh token.');
+        }
+        console.log('[HUBSPOT] Refreshing access token via OAuth2...');
+        const response = await axios_1.default.post('https://api.hubapi.com/oauth/v1/token', new URLSearchParams({
+            grant_type: 'refresh_token',
+            client_id: env_1.ENV.HUBSPOT.CLIENT_ID,
+            client_secret: env_1.ENV.HUBSPOT.CLIENT_SECRET,
+            refresh_token: env_1.ENV.HUBSPOT.REFRESH_TOKEN
+        }).toString(), {
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            }
+        });
+        const { access_token, expires_in } = response.data;
+        this.token = access_token;
+        // Set expiry 5 minutes before actual expiration for safety margin
+        this.tokenExpiry = Date.now() + (expires_in - 300) * 1000;
+        console.log(`[HUBSPOT] Token refreshed successfully. Expires in ${expires_in}s.`);
+        return this.token;
+    }
+    /**
+     * Returns a valid token, refreshing if necessary.
+     * Uses singleton pattern to avoid concurrent refresh requests.
+     */
+    async getValidToken() {
+        // If OAuth2 is not configured, fallback to static ACCESS_TOKEN
+        if (!this.isOAuth2Available()) {
+            if (!env_1.ENV.HUBSPOT.ACCESS_TOKEN) {
+                throw new Error('[HUBSPOT] No ACCESS_TOKEN configured and OAuth2 credentials missing.');
+            }
+            return env_1.ENV.HUBSPOT.ACCESS_TOKEN;
+        }
+        // Check if current token is still valid
+        if (this.token && this.tokenExpiry && Date.now() < this.tokenExpiry) {
+            return this.token;
+        }
+        // Use singleton to prevent concurrent refresh requests
+        if (this.tokenRefreshPromise) {
+            return this.tokenRefreshPromise;
+        }
+        this.tokenRefreshPromise = this.fetchNewToken().finally(() => {
+            this.tokenRefreshPromise = null;
+        });
+        return this.tokenRefreshPromise;
     }
     // Generic methods
     async get(url, config) {
