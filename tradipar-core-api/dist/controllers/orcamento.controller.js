@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.orcamentoController = exports.OrcamentoController = void 0;
 const orcamento_service_1 = require("../services/orcamento.service");
+const quote_service_1 = require("../services/quote.service");
 class OrcamentoController {
     async generateHeader(req, res) {
         const { dealId } = req.body;
@@ -34,13 +35,15 @@ class OrcamentoController {
             return;
         }
         try {
-            const result = await orcamento_service_1.orcamentoService.syncQuoteItems(dealId, nunota);
-            if (result.success) {
-                res.status(200).json(result);
-            }
-            else {
-                res.status(400).json(result);
-            }
+            const syncResult = await orcamento_service_1.orcamentoService.syncQuoteItems(dealId, nunota);
+            // Após sincronizar, buscar o status atualizado (incluindo rentabilidade) para o frontend
+            const statusResult = await quote_service_1.quoteService.getQuoteStatus(dealId);
+            // Always return 200 so hubspot.fetch doesn't throw.
+            // The frontend checks res.success to differentiate.
+            res.status(200).json({
+                ...syncResult,
+                quoteStatus: statusResult.success ? statusResult.status : null
+            });
         }
         catch (error) {
             console.error(`[OrcamentoController] Error syncing items for deal ${dealId}:`, error.message);

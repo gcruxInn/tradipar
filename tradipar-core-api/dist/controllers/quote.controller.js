@@ -3,106 +3,78 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.quoteController = exports.QuoteController = void 0;
 const quote_service_1 = require("../services/quote.service");
 class QuoteController {
-    async createQuote(req, res) {
+    async getQuoteStatus(req, res) {
+        const { dealId } = req.params;
+        if (!dealId) {
+            res.status(400).json({ success: false, error: "Missing dealId" });
+            return;
+        }
         try {
-            const { dealId } = req.body;
-            if (!dealId) {
-                res.status(400).json({ success: false, error: 'dealId é obrigatório' });
-                return;
-            }
-            const result = await quote_service_1.quoteService.createQuote(dealId);
-            res.json(result);
+            const result = await quote_service_1.quoteService.getQuoteStatus(dealId);
+            console.log(`[QuoteController] Outbound Status for ${dealId}:`, JSON.stringify(result.status));
+            res.status(200).json(result);
         }
         catch (error) {
-            console.error('[QUOTE CONTROLLER ERROR]', error.message);
+            console.error(`[QuoteController] Error getting status for deal ${dealId}:`, error.message);
+            res.status(500).json({ success: false, error: error.message });
+        }
+    }
+    async createQuote(req, res) {
+        try {
+            const result = await quote_service_1.quoteService.createQuote(req.body);
+            res.status(200).json(result);
+        }
+        catch (error) {
+            res.status(500).json({ success: false, error: error.message });
+        }
+    }
+    async confirmQuote(req, res) {
+        const { dealId, nunota } = req.body;
+        try {
+            const result = await quote_service_1.quoteService.confirmQuote(dealId, nunota);
+            res.status(200).json(result);
+        }
+        catch (error) {
             res.status(500).json({ success: false, error: error.message });
         }
     }
     async convertToOrder(req, res) {
         try {
-            const { objectId } = req.body;
-            if (!objectId) {
-                res.status(400).json({ success: false, error: 'objectId é obrigatório' });
-                return;
-            }
-            const result = await quote_service_1.quoteService.convertToOrder(objectId);
-            res.json(result);
+            const result = await quote_service_1.quoteService.convertToOrder(req.body);
+            res.status(200).json(result);
         }
         catch (error) {
-            console.error('[QUOTE CONTROLLER ERROR]', error.message);
-            res.status(500).json({ success: false, error: error.message });
-        }
-    }
-    async getQuoteStatus(req, res) {
-        try {
-            const dealId = req.params.dealId;
-            const result = await quote_service_1.quoteService.getQuoteStatus(dealId);
-            res.json(result);
-        }
-        catch (error) {
-            console.error('[QUOTE CONTROLLER ERROR]', error.message);
-            res.status(500).json({ success: false, error: error.message });
-        }
-    }
-    async confirmQuote(req, res) {
-        try {
-            const { dealId, nunota, forceConfirm } = req.body;
-            if (!dealId || !nunota) {
-                res.status(400).json({ success: false, error: 'dealId e nunota são obrigatórios' });
-                return;
-            }
-            const result = await quote_service_1.quoteService.confirmQuote(dealId, Number(nunota), forceConfirm);
-            res.json(result);
-        }
-        catch (error) {
-            console.error('[QUOTE CONTROLLER ERROR]', error.message);
             res.status(500).json({ success: false, error: error.message });
         }
     }
     async checkProfitability(req, res) {
         try {
-            const nunota = req.params.nunota;
-            const result = await quote_service_1.quoteService.getProfitabilityInternal(nunota);
-            if (result.success) {
-                res.json(result);
-            }
-            else {
-                res.status(500).json(result);
-            }
+            const result = await quote_service_1.quoteService.getProfitabilityInternal(req.params.nunota);
+            res.status(200).json(result);
         }
         catch (error) {
-            console.error('[QUOTE CONTROLLER ERROR]', error.message);
             res.status(500).json({ success: false, error: error.message });
         }
     }
     async generatePdf(req, res) {
+        const { nunota } = req.params;
         try {
-            const nunota = req.params.nunota;
             const result = await quote_service_1.quoteService.generateSankhyaPDF(nunota);
-            res.json({
-                success: true,
-                fileName: result.fileName,
-                base64Length: result.base64 ? result.base64.length : 0,
-                preview: result.base64 ? result.base64.substring(0, 50) + '...' : null
-            });
+            res.status(200).json(result);
         }
         catch (error) {
-            console.error('[QUOTE CONTROLLER ERROR]', error.message);
+            console.error(`[QuoteController] Error generating PDF for nunota ${nunota}:`, error.message);
             res.status(500).json({ success: false, error: error.message });
         }
     }
     async attachPdf(req, res) {
+        const { dealId, pdfFileId } = req.body;
         try {
-            const { dealId, nunota } = req.body;
-            if (!dealId || !nunota) {
-                res.status(400).json({ success: false, error: 'dealId e nunota são obrigatórios' });
-                return;
-            }
-            const result = await quote_service_1.quoteService.attachPdfToHubspot(dealId, nunota);
-            res.json(result);
+            // Versão corrigida para o nome correto no service
+            const result = await quote_service_1.quoteService.attachPdfToHubspot(dealId, pdfFileId);
+            res.status(200).json(result);
         }
         catch (error) {
-            console.error('[QUOTE CONTROLLER ERROR]', error.message);
             res.status(500).json({ success: false, error: error.message });
         }
     }
