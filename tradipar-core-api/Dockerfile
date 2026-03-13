@@ -12,6 +12,7 @@ RUN npm install
 
 # Copiar o código fonte (respeitando o .dockerignore)
 COPY . .
+RUN ls -la src/ && ls -la dist/ || true
 
 # Fazer a Build
 RUN npm run build
