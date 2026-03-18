@@ -29,7 +29,7 @@
     - [x] Endpoint `/hubspot/line-item/add` (HubSpot CRM)
     - [x] Endpoint `/hubspot/duplicate-line-item` (HubSpot CRM)
 - [x] Backend: Item Detail Enrichment
-    - [x] Update [getDealSankhyaContext](file://wsl.localhost/Ubuntu-22.04/home/rochagabriel/dev/tradipar/aws-server-alef/index.js#73-267) to fetch `CONTROLE` and `PERCLUCRO` from `TGFITE`
+    - [x] Update getDealSankhyaContext to fetch `CONTROLE` and `PERCLUCRO` from `TGFITE`
 - [x] Frontend: "Add Item" Component (PrecosCard.tsx)
     - [x] Search input and result selection
     - [x] Add to deal logic
@@ -48,209 +48,131 @@
     - [x] Backend: Update endpoint for line item properties (sankhya_controle)
     - [x] Backend: Batch/Lot (CONTROLE) fetcher from Sankhya
     - [x] Frontend: "Ações" Dropdown (Duplicar/Excluir) in table
-    - [x] Frontend: Interactive "Lote" selector with live stock sync
 
 ---
 
-## Phase 13: Estabilidade e Refatoração (UI Crash Fix)
-- [x] Refactor: Mover Modal de preço customizado para a raiz do componente.
-- [x] Fix: Remover props não suportadas de `TableCell` e `Dropdown`.
-- [x] Refactor: Sincronização manual de estado local após Adicionar/Excluir/Duplicar itens.
-- [x] Cleanup: Remover logs de rastreio de [index.js](file://wsl.localhost/Ubuntu-22.04/home/rochagabriel/dev/tradipar/aws-server-alef/index.js).
-- [x] Verification: Testar fluxo completo sem crashes.
+## ✅ PHASE 13: Search Enrichment & Process Governance (COMPLETED) 🎉 (2026-03-18)
+- [x] **Backend: Product Search Real-Time Stock Enrichment**
+    - [x] Implement bulk query to `TGFEST` in `catalog.service.ts`
+    - [x] Add Matriz (CODEMP 1) and Filial (CODEMP 2) stocks to search results
+    - [x] Refactor and audit: Fix implicit `any` TS error in `catalog.service.ts`
+- [x] **Frontend: Search UI Enhancement (PrecosCard.tsx)**
+    - [x] Update product selection labels to: `[ID] NOME [Matriz: X] [Filial: Y]`
+- [x] **Governance: Order Confirmation Flow Alignment**
+    - [x] Revert automatic TOP 1010 confirmation in `quote.service.ts`
+    - [x] Update handoff docs to reflect manual revision requirement (freight/attachments/rota)
+- [x] **Documentation & Strategy**
+    - [x] Update `REFACTORING_MASTER_PLAN.md` (Status 100/100)
+    - [x] Update `BACKLOG_2026-03-13.md` (Sprint 1.0 - 1.2 Concluded)
 
 ---
 
-## Phase 14: Documentação & Finalização (COMPLETED) ✅
-- [x] Atualizar [README.md](file://wsl.localhost/Ubuntu-22.04/home/rochagabriel/dev/tradipar/sankhya-integration-innleaders/README.md) com arquitetura e novos recursos.
-- [x] Atualizar [walkthrough.md](file:///C:/Users/gabri/.gemini/antigravity/brain/09f09d80-dc04-4b74-b538-d001c86e524f/walkthrough.md) com guia de estabilidade.
+## 🔵 PHASE 40: Deal Lifecycle Completion — DANFE Attachment (A FAZER) 🚀
+> **Estimativa Total:** ~30h | **Prioridade:** 🔴 URGENTE (Bloqueador das Phases 41 e 42)
+
+### 40.1 — UI: Botão "Faturar Pedido" no CRM Card
+- [ ] Criar CTA "Faturar" visível somente quando `dealtype === '1010'`
+- [ ] Bloquear botão com tooltip se o pedido não atender pré-condições
+- [ ] Exibir loader e feedback de erro/sucesso inline
+- **⏱️ Estimativa:** 5h (ideal: 3h + 2h de margem para edge cases de UI)
+
+### 40.2 — API: `billOrder()` Endpoint e Orquestração Sankhya
+- [ ] Expor endpoint `POST /hubspot/order/bill` no `order.controller.ts`
+- [ ] Acionar `quote.service.ts:billOrder()` com fallback chain:
+    - Attempt 1: `SalesCentralSP.faturarNota`
+    - Attempt 2: `CACSP.faturarNota`
+    - Attempt 3: `SelecaoDocumentoSP.faturar` (HAR payload)
+- [ ] Tratativa de erros financeiros do Sankhya (bloqueio de crédito, etc.)
+- **⏱️ Estimativa:** 8h (ideal: 5h + 3h de margem para testes de fallback)
+
+### 40.3 — Sync: Captura e Mapeamento do `NUMNOTA` Final
+- [ ] Consultar `TGFCAB` após faturamento para capturar `NUMNOTA` da TOP 1100
+- [ ] Atualizar HubSpot: `sankhya_nu_unico_nfe`, `sankhya_nunota_final`, `nu_final_faturamento`
+- [ ] Validar relação pai/filho `NUNOTAORIG → NUNOTA` no banco
+- **⏱️ Estimativa:** 4h (ideal: 2h + 2h de margem para variações de retorno Sankhya)
+
+### 40.4 — ⭐ DANFE: PDF da Nota Fiscal Emitida no HubSpot
+- [ ] Chamar endpoint de geração de PDF da Nota no Sankhya(rDynasty/DocService)
+- [ ] Upload multipart/form-data do PDF para o HubSpot Engagement
+- [ ] Associar PDF ao Deal via `attachments API`
+- [ ] Implementar retry logic em caso de nota ainda não processada
+- **⏱️ Estimativa:** 8h (ideal: 5h + 3h de margem para latência de processamento)
+
+### 40.5 — Pipeline: Closed Won Automation
+- [ ] Após confirmação do anexo DANFE, alterar `dealstage` para `closedwon`
+- [ ] Atualizar `closedate` com a data do faturamento
+- [ ] Disparar log de conclusão do ciclo
+- **⏱️ Estimativa:** 3h (ideal: 2h + 1h de margem)
+
+> 🔔 **Checkpoint:** Validar em staging/sandbox antes de ativar em produção.
 
 ---
 
-## Phase 15: Otimização Fullstack & Integridade (Implementação Atual)
-- [ ] Self-healing: Corrigir erro de sintaxe em [index.js](file://wsl.localhost/Ubuntu-22.04/home/rochagabriel/dev/tradipar/aws-server-alef/index.js) (Ln 2526).
-- [ ] Self-healing: Validar ordem de Hooks em [PrecosCard.tsx](file://wsl.localhost/Ubuntu-22.04/home/rochagabriel/dev/tradipar/sankhya-integration-innleaders/src/app/cards/PrecosCard.tsx) (Erro React #310).
-- [ ] Backend: Implementar [fixEncoding](file://wsl.localhost/Ubuntu-22.04/home/rochagabriel/dev/tradipar/aws-server-alef/index.js#40-51) (UTF-8) para respostas do Sankhya.
-- [ ] Logic: Migrar vínculo para priorizar `orcamento_sankhya`.
-- [ ] Frontend: Auto-seleção de Lote único e Badges de Rentabilidade.
-- [x] **Validation**
-  - [x] Run `hs project validate`.
-  - [x] Verify `node index.js` syntax (Exit Code 0).
+## 🟡 PHASE 41: Stock Cut Engine — Validação de Estoque (BACKLOG PÓS-DANFE)
+> **Estimativa Total:** ~22h | **Prioridade:** 🟡 ALTA (após Phase 40 estável)
+> **Regra de Negócio:** Validar estoque disponível antes de confirmar orçamento. Possibilitar corte parcial.
 
-- [x] **Phase 16: Performance & Stability (Emergency)**
-  - [x] **Frontend (PrecosCard.tsx)**
-    - [x] Implement Debounce (via lock/ref) for data fetching.
-    - [x] Add strict `isFetching` lock to prevent request stacking.
-  - [x] **Backend (index.js)**
-    - [x] Implement In-Memory Cache (5s) for [STK] queries per CODPROD/CODEMP.
-    - [x] Fix `undefined` STK Raw Response with try/catch fallback (return '0').
-    - [x] Reduce log verbosity (clean [DISCOVERY]/[STK] logs).
-  - [x] **Validation**
-    - [x] Verify fix on Deal 55475038735.
+### 41.1 — Backend: `validateStockBeforeOrder(items[])`
+- [ ] Criar método em `catalog.service.ts` que recebe o array de itens
+- [ ] Buscar saldos em lote na `TGFEST` por `CODPROD + CODEMP`
+- [ ] Retornar lista de itens com `available`, `ordered` e `gap` (divergência)
+- **⏱️ Estimativa:** 6h (ideal: 3h + 3h de margem para lógica de corte)
 
-- [x] **Phase 17: UX Stabilization & Logic Hardening**
-  - [x] **Frontend (PrecosCard.tsx)**
-    - [x] **Stop Loop**: Implement `useRef` with data hash/transactionId to block redundant fetches.
-    - [x] **Fix Modal**: Ensure "Customizar" button correctly opens the modal (check `setCustomPriceItemId`).
-    - [x] **Multi-Company Stock**: Display multi-company stock (e.g., "A: X / B: Y") or revert strict filters.
-  - [x] **Backend (index.js)**
-    - [x] **Cloning**: Force immediate copy of `sankhya_codprod` and `cod_parceiro` during item duplication.
-    - [x] **Encoding**: Apply [fixEncoding()](file://wsl.localhost/Ubuntu-22.04/home/rochagabriel/dev/tradipar/aws-server-alef/index.js#40-51) to deal headers (`fase_negociacao`, `status`).
-    - [x] **Rentabilidade**: Trigger `recalc_needed` if profit is 0.00 but items exist.
-  - [x] **Validation**
-    - [x] Verify "Negociação" text (encoding).
-    - [x] Verify Modal opens.
+### 41.2 — API: Guard de Pré-Confirmação
+- [ ] Chamar `validateStockBeforeOrder` antes de invocar a confirmação do orçamento
+- [ ] Se houver gap: retornar resposta estruturada com `stockErrors[]`
+- [ ] Endpoint deve suportar modo `force=true` para corte explícito autorizado
+- **⏱️ Estimativa:** 5h (ideal: 3h + 2h para testes de input edge cases)
 
-- [ ] **Phase 18: UX Refinement & Persistence**
-  - [ ] **Frontend (PrecosCard.tsx)**
-    - [ ] **Delete Flow**: Force "ADD_FIRST_ITEM" UI state immediately when last item is deleted.
-    - [ ] **Modal Fix**: Move `<Modal>` to root, rename button to "Adicionar Valor", fix visibility state.
-    - [ ] **Lote Binding**: Bind Select value to persistent `item.controle`.
-  - [ ] **Backend (index.js)**
-    - [ ] **Read Back**: Fetch `sankhya_controle` from HubSpot Line Item in Discovery phase.
-    - [ ] **Payload**: Return `sankhyaControle` in item object.
-  - [ ] **Validation**
-    - [x] Verify empty state transition.
-    - [x] Verify Modal opening.
-    - [x] Verify Lote persistence after refresh.
+### 41.3 — UI: Modal de Validação de Estoque
+- [ ] Exibir modal com tabela de itens com divergência (produto, solicitado, disponível, gap)
+- [ ] Opção A: "Confirmar com Corte" — ajustar quantidades automaticamente
+- [ ] Opção B: "Cancelar" — retornar ao deal sem confirmação
+- [ ] Registrar corte realizado na propriedade `sankhya_stock_cut_items` do Deal
+- **⏱️ Estimativa:** 7h (ideal: 4h + 3h de margem para UX e acessibilidade)
 
-- [x] **Phase 19: Lote Persistence Fix**
-  - [x] **Backend**: Map `sankhya_controle` to `controle` (Internal Name Fix).
-  - [x] **Logs**: Added DEBUG-WRITE.
-
-- [ ] **Phase 20: Property Name Correction**
-   - [x] Correct mapping in [index.js](file://wsl.localhost/Ubuntu-22.04/home/rochagabriel/dev/tradipar/aws-server-alef/index.js) (`sankhya_controle` -> `controle`).
-
-- [x] **Phase 21-23: Modal Visibility & Syntax Fixes (ABANDONED)**
-   - [x] **Props**: Removed invalid `width/size` props from Modal.
-   - [x] **Debug**: Added external "MODAL STATE ACTIVE" Alert.
-   - [x] **Syntax**: Fixed malformed JSX (extra parenthesis/missing fragment).
-   - [!] **Result**: Modal remains invisible despite state updates. Pivoting to Inline Edit.
-
-- [x] **Phase 24: Inline Custom Price Edit**
-    - [x] **State**: Add `isEditingPrice` state to track which item is being edited.
-    - [x] **UI**: Replace "Adicionar Valor" button with an inline NumberInput when editing.
-    - [x] **UX**: Optimistic Updates & Dynamic Labels.
-- [x] **Phase 24: Inline Custom Price Edit**
-    - [x] **State**: Add `isEditingPrice` state to track which item is being edited.
-    - [x] **UI**: Replace "Adicionar Valor" button with an inline NumberInput when editing.
-    - [x] **UX**: Optimistic Updates & Dynamic Labels.
-    - [x] **Verification**: Confirmed code logic exists via WSL grep (Lines 377, 767, 777).
-
-- [x] **Phase 25: Performance Optimization (Timeout Fix)**
-   - [x] **Analysis**: Profile `/hubspot/prices/deal` latency vs Sankhya.
-   - [x] **Fix**: Parallelize item price fetches (replace `for..of` with `Promise.all`).
-   - [x] **Resilience**: Add concurrency limit (chunks of 5).
-
-- [x] **Phase 26: Sync Total Amount & HubSpot Refresh**
-   - [x] **State**: Auto-update `amount` when `selectedPrices` changes (useEffect).
-   - [x] **Sync**: Call `onRefreshProperties()` after inline save.
-   - [x] **Force Save**: Explicitly save amount on item changes.
-    
-- [/] **Phase 28: UI/UX Overhaul (Hybrid Tabs & Steps)**
-   - [x] **Step 1 (Handshake)**: Global process validation (`orcamento_sankhya`).
-   - [x] **Step 2 (Items Hub)**: Nested Tabs (Add / Edit / Details).
-   - [x] **Step 3 (Checkout)**: Financial summary & Sync.
-   - [/] **Validation**: `hs project validate` & `onRefreshProperties` check.
-
-## Phase 29: Post-Refactor General Fixes (Active)
-- [x] **Fix Status Label**: Change status to "Iniciando Negociação" when no budget exists.
-- [x] **Debug Item Sync**: Investigate why items are not added when creating a new quote.
-- [x] **Fix Tabs Layout**: Correct Tabs structure in PrecosCard (nested children, fixed props).
-- [x] **Refine Add Item UX**: Unite SeachInput and Select into a single searchable Select component.
-- [x] **Debug Missing Prices**: Investigate why prices disappear for newly added items (Stock Cut?) -> Handled via Frontend Heuristics.
-- [x] **Refine Stock Display**: Show Total Stock and Filter Lots by Company.
-- [x] **Deploy Fixes**: Deploy final fixes.
-
-## 🔮 FUTURE: SDK Beta Migration (PENDING ACCESS)
-- [x] Request SDK Beta access from Sankhya support
-- [ ] Migrate to `@Service` annotation if access granted
-- [ ] Implement proper `@core:confirmacao.nota.service` integration
+### 41.4 — QA & Validação em Produção
+- [ ] Testar cenários: estoque suficiente, corte parcial, estoque zero
+- **⏱️ Estimativa:** 4h
 
 ---
 
-## ✅ Phase 30: Documentação do Antigravity (COMPLETED)
-- [x] Navegar até https://antigravity.google/docs/home com subagente.
-- [x] Extrair informações sobre ferramentas, MCP, e capacidades.
-- [x] Documentar os resultados em um artefato para revisão.
+## 🟡 PHASE 42: Profitability Approval Gate — Aprovação por Rentabilidade (BACKLOG PÓS-DANFE)
+> **Estimativa Total:** ~24h | **Prioridade:** 🟡 ALTA (após Phase 40 estável)
+> **Regra de Negócio:** Orçamentos com rentabilidade negativa exigem aprovação de um superior antes de virar pedido.
+
+### 42.1 — Backend: Motor de Cálculo de Rentabilidade Consolidada
+- [ ] Criar método `calculateDealProfitability(dealId)` no `quote.service.ts`
+- [ ] Agregar `PERCLUCRO` de todos os itens do deal
+- [ ] Retornar `{ totalProfit, averageMargin, belowThreshold: boolean }`
+- **⏱️ Estimativa:** 5h (ideal: 3h + 2h para validação dos cálculos)
+
+### 42.2 — API: Gate de Aprovação
+- [ ] Endpoint `POST /hubspot/approval-request`
+- [ ] Se `belowThreshold`: bloquear pedido e criar HubSpot Task atribuída ao Gerente
+- [ ] Registrar status no Deal: `sankhya_approval_status: 'pending' | 'approved' | 'rejected'`
+- [ ] Somente `approved` libera a confirmação da TOP 1010
+- **⏱️ Estimativa:** 7h (ideal: 4h + 3h para integração HubSpot Tasks API)
+
+### 42.3 — UI: Feedback Visual de "Em Aprovação"
+- [ ] Badge/Banner "Orçamento em Análise — Aguardando Aprovação Gerencial" no CRM Card
+- [ ] Desabilitar botão "Confirmar" enquanto `approval_status === 'pending'`
+- [ ] Exibir histórico de aprovações (aprovador, data, comentário)
+- **⏱️ Estimativa:** 7h (ideal: 4h + 3h para estados complexos de UI)
+
+### 42.4 — QA & Validação em Produção
+- [ ] Testar cenários: margem positiva, margem negativa, aprovação gerencial, rejeição
+- **⏱️ Estimativa:** 5h
 
 ---
 
-## ✅ Phase 31: Deep Documentation Extraction (COMPLETED)
-- [x] Scrape remaining 42 pages sequentially.
-- [x] Capture advanced insights (Models, Rules, Skills, Strict Mode, MCP Config).
-- [x] Update analysis artifact with deep technical specs.
+## 📊 RESUMO DE HORAS ESTIMADAS
 
----
+| Phase | Descrição | Estimativa Total |
+|-------|-----------|-----------------|
+| 40 | Deal Lifecycle — DANFE Attachment | **30h** |
+| 41 | Stock Cut Engine | **22h** |
+| 42 | Profitability Approval Gate | **24h** |
+| **TOTAL** | **Phases 40–42** | **🕐 76h (~10 dias úteis)** |
 
-## ✅ Phase 32: Planning & Creating Antigravity Skills for Tradipar (COMPLETED)
-- [x] Analisar a arquitetura corporativa do Tradipar (Java, Node.js, HubSpot React).
-- [x] Desenhar o Plano de Implementação de Skills no [implementation_plan.md](file:///C:/Users/gabri/.gemini/antigravity/brain/09f09d80-dc04-4b74-b538-d001c86e524f/implementation_plan.md).
-- [x] Receber aprovação do usuário para o design dos Agentes.
-- [x] Criar a estrutura `.agents/skills/` e `workflows/` no repositório Tradipar.
-- [x] Atualizar a documentação do repositório (`README.md`) para refletir o ecossistema gerenciado por Agentes (AI-Driven).
-
----
-
-## ✅ Phase 33: Skill Optimization & Active Probes (COMPLETED)
-- [x] Criar diretórios de `scripts/` para cada skill do Antigravity.
-- [x] Implementar `build_probe.sh` para `hubspot-ui-dev` (Validação React/Hooks).
-- [x] Implementar `build_probe.sh` para `node-proxy-dev` (Verificação de Sintaxe e Lifecycle).
-- [x] Implementar `build_probe.sh` para `sankhya-java-dev` (Teste de Compilação Dry-Run).
-- [x] Atualizar os frontmatters dos arquivos `SKILL.md` exigindo uso dos scripts de probe.
-- [x] Validar execução autônoma dos probes.
-
----
-
-## ✅ Phase 34: Orquestração de Soluções UI & Backend (COMPLETED)
-- [x] Clonagem de Itens: Contexto de `sankhya_controle`, estoque e métricas espelhados no Endpoint Node.js.
-- [x] Rentabilidade em Tempo Real: Adição de coluna visual (Rentab.), atualização OnChange e OnClick transparente na tabela (PrecosCard).
-- [x] Guardrails contra Prejuízo: Bloqueio agressivo (isRentavel) que impede a renderização final do negócio em caso de margens nativas inaceitáveis.
-- [x] Integrafção de MGECOM/PDF: Transação engatilha download Base64 nativo do Sankhya convertido e anexado (API Files / Note) ao Deal do HubSpot.
-- [x] Dry-run do ecossistema e TypeScript format fix no HubSpot CLI confirmados com sucesso.
-
----
-
-## ✅ Phase 35: Enterprise Refactor - Módulo 1 (Orçamento & Confirmação) [COMPLETED]
-- [x] Criar `src/controllers/quote.controller.ts` e `src/services/quote.service.ts`
-- [x] Refatorar `/hubspot/create-quote`
-- [x] Refatorar `/hubspot/convert-to-order`
-- [x] Refatorar `/hubspot/quote-status/:dealId`
-- [x] Refatorar `/hubspot/confirm-quote`
-- [x] Refatorar `/sankhya/check-profitability/:nunota`
-- [x] Refatorar `/sankhya/generate-pdf/:nunota`
-- [x] Refatorar `/sankhya/pdf/attach`
-- [ ] Testes Manuais & Deploy Seguro Vhost
-
----
-
-## ✅ Phase 36: Enterprise Refactor - Módulo 2 (Produtos, Preços e Estoque) [COMPLETED]
-- [x] Criar `src/controllers/catalog.controller.ts` e `src/services/catalog.service.ts`
-- [x] Refatorar `/sankhya/stock-all-units/:codProd` e `/sankhya/stock-all-units`
-- [x] Refatorar `/hubspot/prices/deal`
-- [x] Refatorar `/hubspot/products/search` e `/hubspot/products/controls/:codProd`
-- [x] Refatorar endpoits de `/sankhya/debug/*` atrelados ao catálogo
-- [ ] Testes Manuais & Deploy Seguro Vhost
-
----
-
-## ✅ Phase 37: Enterprise Refactor - Módulo 3 (Line Items & Deals) [COMPLETED]
-- [x] Criar `src/controllers/deal.controller.ts` e `src/services/deal.service.ts`
-- [x] Refatorar `/hubspot/update/deal` e `/hubspot/debug-deal/:dealId`
-- [x] Refatorar CRUD line items (`/hubspot/update/line-item`, `/hubspot/line-item/add`, `/hubspot/duplicate-line-item`, `/hubspot/line-item/update`, `DELETE /hubspot/line-item/:id`)
-- [ ] Testes Manuais & Deploy Seguro Vhost
-
----
-
-## ✅ Phase 38: Enterprise Refactor - Módulo 4 [COMPLETED] (Importações em Lote)
-- [x] Criar `src/controllers/sync.controller.ts` e `src/services/sync.service.ts`
-- [x] Refatorar `/sankhya/import/partners`
-- [x] Refatorar `/sankhya/import/products`
-- [ ] Testes Manuais & Deploy Seguro Vhost
-
----
-
-## ✅ Phase 39: Enterprise Refactor - Módulo 5 (Discovery & Debug) [COMPLETED]
-- [x] Criar `src/controllers/discovery.controller.ts` e `src/services/discovery.service.ts`
-- [x] Refatorar utilitários e endpoints discovery (`/debug/sql`, `/hubspot/debug/product-properties`, `/sankhya/discovery/*`)
-- [x] Desligar o Monolito Antigo legado em definitivo (Migração 100% Core)
+> 💡 **Nota de Estimativa:** Os valores já incluem margem de 30–40% para debugging, revisões, testes em staging e micro-ajustes de UX. Estima-se **2.5 sprints de 2 semanas** para entrega completa das 3 phases.
