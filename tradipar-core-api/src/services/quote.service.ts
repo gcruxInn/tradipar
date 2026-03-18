@@ -552,30 +552,11 @@ class QuoteService {
     const nrNotaPedido = pedidoRow?.[1] || null;
     const nrPedidoVenda = pedidoRow?.[2] || null;
 
-    // Gap 1 Fix: Auto-confirm the generated TOP 1010 order (se existir via trigger Sankhya)
+    // --- REVERTED GAP 1: TOP 1010 must NOT be confirmed automatically ---
+    // Business Rule: The seller needs to make manual adjustments (freight, attachments, whatsapp screenshots)
+    // in Sankhya before confirming the Order.
     if (nuUnicoPedido) {
-      console.log(`[PEDIDO] Auto-confirmando pedido gerado NUNOTA=${nuUnicoPedido}...`);
-      try {
-        const confirmPedidoResp = await sankhyaApi.post<any>('/gateway/v1/mgecom/service.sbr?serviceName=CACSP.confirmarNota&outputType=json', {
-          serviceName: "CACSP.confirmarNota",
-          requestBody: { nota: { NUNOTA: { "$": String(nuUnicoPedido) } } }
-        });
-
-        if (confirmPedidoResp.data.status === "1") {
-          console.log(`[PEDIDO] Confirmado com sucesso NUNOTA=${nuUnicoPedido}`);
-        } else {
-          const msg = confirmPedidoResp.data.statusMessage || 'Erro desconhecido';
-          const normalizedMsg = msg.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-          if (normalizedMsg.includes('ja foi confirmada') || normalizedMsg.includes('ja confirmada')) {
-            console.log(`[PEDIDO] NUNOTA=${nuUnicoPedido} já estava confirmado.`);
-          } else {
-            console.warn(`[PEDIDO] Falha ao confirmar NUNOTA=${nuUnicoPedido}: ${msg}`);
-          }
-        }
-      } catch (e: any) {
-        console.error(`[PEDIDO] Erro ao auto-confirmar NUNOTA=${nuUnicoPedido}:`, e.message);
-        // Non-blocking: continue with HubSpot update even if auto-confirm fails
-      }
+      console.log(`[PEDIDO] Pedido gerado NUNOTA=${nuUnicoPedido}. Aguardando confirmação manual no Sankhya.`);
     }
 
     const nrNotaSafe = (nrNota && Number(nrNota) !== 0 && String(nrNota) !== String(confirmedNunota)) ? String(nrNota) : "0";
