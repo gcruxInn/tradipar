@@ -853,7 +853,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                     name="prod-search"
                     placeholder="Digite para buscar..."
                     options={searchResults.map((p: any) => ({
-                        label: `[${p.codProd}] ${p.name}${p.controle ? ` (Controle: ${p.controle})` : ""}`,
+                        label: `[${p.codProd}] ${p.name} [Matriz: ${p.stockMatriz || 0}] [Filial: ${p.stockFilial || 0}]${p.controle ? ` (Controle: ${p.controle})` : ""}`,
                         value: p.codProd.toString()
                     }))}
                     onInput={(val: string) => {
