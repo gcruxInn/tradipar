@@ -48,6 +48,17 @@ export class DiscoveryController {
       res.status(500).json({ error: error.message, detail: error.response?.data });
     }
   }
+
+  // GET /sankhya/discovery/delivery-routes
+  public async discoverySankhyaDeliveryRoutes(req: Request, res: Response): Promise<void> {
+    try {
+      const result = await discoveryService.discoverySankhyaDeliveryRoutes();
+      res.json(result);
+    } catch (error: any) {
+      console.error(`[DISCOVERY ERROR] discoverySankhyaDeliveryRoutes: ${error.message}`);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
 }
 
 export const discoveryController = new DiscoveryController();

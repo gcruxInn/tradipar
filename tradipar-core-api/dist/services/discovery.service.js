@@ -85,5 +85,36 @@ class DiscoveryService {
         const response = await hubspot_api_1.hubspotApi.get('/crm/v3/properties/products');
         return response.data.results.map((p) => ({ label: p.label, name: p.name, type: p.type })).sort((a, b) => a.label.localeCompare(b.label));
     }
+    // ================================================================
+    // DISCOVERY: Sankhya Delivery Routes
+    // ================================================================
+    async discoverySankhyaDeliveryRoutes() {
+        const queries = [
+            {
+                name: "Colunas da tabela TGFCAB (Pedidos)",
+                sql: "SELECT COLUMN_NAME, DATA_TYPE FROM USER_TAB_COLUMNS WHERE TABLE_NAME = 'TGFCAB' ORDER BY COLUMN_NAME"
+            },
+            {
+                name: "Buscar colunas ROTA no TGFCAB",
+                sql: "SELECT COLUMN_NAME, DATA_TYPE FROM USER_TAB_COLUMNS WHERE TABLE_NAME = 'TGFCAB' AND UPPER(COLUMN_NAME) LIKE '%ROTA%' ORDER BY COLUMN_NAME"
+            },
+            {
+                name: "Exemplo de dados TGFCAB com rotas",
+                sql: "SELECT * FROM TGFCAB WHERE ROWNUM <= 1"
+            }
+        ];
+        const results = {};
+        for (const q of queries) {
+            try {
+                const resp = await this.debugSql(q.sql);
+                const rb = resp?.responseBody;
+                results[q.name] = { success: true, rows: rb?.rows || [], fields: rb?.fieldsMetadata || [] };
+            }
+            catch (err) {
+                results[q.name] = { success: false, error: err.message };
+            }
+        }
+        return { success: true, timestamp: new Date().toISOString(), results };
+    }
 }
 exports.discoveryService = new DiscoveryService();

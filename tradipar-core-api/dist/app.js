@@ -45,6 +45,8 @@ app.get('/sankhya/check-profitability/:nunota', quote_controller_1.quoteControll
 app.get('/sankhya/generate-pdf/:nunota', quote_controller_1.quoteController.generatePdf.bind(quote_controller_1.quoteController));
 app.post('/sankhya/pdf/attach', quote_controller_1.quoteController.attachPdf.bind(quote_controller_1.quoteController));
 app.get('/hubspot/deal/:dealId/attachments', quote_controller_1.quoteController.getDealAttachments.bind(quote_controller_1.quoteController));
+app.get('/hubspot/property-options/:propertyName', quote_controller_1.quoteController.getPropertyOptions.bind(quote_controller_1.quoteController));
+app.post('/sankhya/pedido/preparar', quote_controller_1.quoteController.prepareOrder.bind(quote_controller_1.quoteController));
 // Catalog Routes (Módulo 2 - Produtos, Preços e Estoque)
 // [DEPRECATED] app.get('/sankhya/stock-all-units/:codProd', catalogController.getStockAllUnits.bind(catalogController));
 // [DEPRECATED] app.post('/sankhya/stock-all-units', catalogController.getStockMultipleProducts.bind(catalogController));
@@ -70,6 +72,7 @@ app.post('/sankhya/import/products', sync_controller_1.syncController.importProd
 app.post('/debug/sql', discovery_controller_1.discoveryController.debugSql.bind(discovery_controller_1.discoveryController));
 app.get('/sankhya/discovery/quote-tables', discovery_controller_1.discoveryController.discoveryQuoteTables.bind(discovery_controller_1.discoveryController));
 app.get('/sankhya/discovery/services', discovery_controller_1.discoveryController.discoveryServices.bind(discovery_controller_1.discoveryController));
+app.get('/sankhya/discovery/delivery-routes', discovery_controller_1.discoveryController.discoverySankhyaDeliveryRoutes.bind(discovery_controller_1.discoveryController));
 app.get('/hubspot/debug/product-properties', discovery_controller_1.discoveryController.debugProductProperties.bind(discovery_controller_1.discoveryController));
 // Order & Approval Routes (Módulo 4 - Liberações, Pedidos)
 app.get('/sankhya/liberacoes/pendentes/:nunota', order_controller_1.orderController.getPendingApprovals.bind(order_controller_1.orderController));

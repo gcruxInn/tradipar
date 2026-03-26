@@ -977,26 +977,228 @@ class QuoteService {
   // Get deal attachments via Engagements API
   public async getDealAttachments(dealId: string) {
     try {
-      // Query notes associated with the deal that have attachments
-      const notesResp = await hubspotApi.get<any>(
-        `/crm/v3/objects/notes?associations.deal=${dealId}&properties=hs_attachment_ids,hs_note_body,hs_timestamp&limit=100`
+      // Use associations endpoint to get notes for a specific deal
+      const associationsResp = await hubspotApi.get<any>(
+        `/crm/v3/objects/deals/${dealId}/associations/notes?limit=100`
       );
 
-      const attachments = (notesResp.data?.results || [])
-        .filter((note: any) => note.properties.hs_attachment_ids)
-        .map((note: any) => ({
-          id: note.id,
-          fileIds: String(note.properties.hs_attachment_ids).split(';').filter((id: string) => id.trim()),
-          body: note.properties.hs_note_body || 'Anexo',
-          timestamp: note.properties.hs_timestamp
-        }))
-        .filter((att: any) => att.fileIds.length > 0);
+      const noteIds = (associationsResp.data?.results || []).map((assoc: any) => assoc.id);
+
+      if (noteIds.length === 0) {
+        console.log(`[DEAL ATTACHMENTS] No notes associated with deal ${dealId}`);
+        return { success: true, attachments: [] };
+      }
+
+      // Fetch properties for each note
+      const attachments: any[] = [];
+      for (const noteId of noteIds) {
+        try {
+          const noteResp = await hubspotApi.get<any>(
+            `/crm/v3/objects/notes/${noteId}?properties=hs_attachment_ids,hs_note_body,hs_timestamp`
+          );
+          const note = noteResp.data;
+
+          if (note.properties?.hs_attachment_ids) {
+            const fileIds = String(note.properties.hs_attachment_ids).split(';').filter((id: string) => id.trim());
+            let displayText = note.properties.hs_note_body || '';
+
+            // If no description or generic "Anexo", fetch actual file names
+            if (!displayText || displayText.trim() === 'Anexo') {
+              const fileNames: string[] = [];
+              for (const fileId of fileIds) {
+                try {
+                  const fileResp = await hubspotApi.get<any>(`/files/v3/files/${fileId}`);
+                  if (fileResp.data?.name) {
+                    fileNames.push(fileResp.data.name);
+                    console.log(`[DEAL ATTACHMENTS] File ${fileId}: ${fileResp.data.name}`);
+                  }
+                } catch (fileErr: any) {
+                  console.warn(`[DEAL ATTACHMENTS] Could not fetch file name for ${fileId}:`, fileErr.message);
+                }
+              }
+              // Use file names if available, otherwise fallback
+              displayText = fileNames.length > 0 ? fileNames.join(', ') : 'Anexo';
+            }
+
+            attachments.push({
+              id: note.id,
+              fileIds,
+              body: displayText,
+              timestamp: note.properties.hs_timestamp
+            });
+          }
+        } catch (noteErr: any) {
+          console.warn(`[DEAL ATTACHMENTS] Could not fetch note ${noteId}:`, noteErr.message);
+        }
+      }
 
       console.log(`[DEAL ATTACHMENTS] Found ${attachments.length} attachments for deal ${dealId}`);
       return { success: true, attachments };
     } catch (err: any) {
       console.error(`[DEAL ATTACHMENTS] Error fetching attachments:`, err.message);
       return { success: false, attachments: [], error: err.message };
+    }
+  }
+
+  // Prepare order: Save obs to Sankhya (OBS_INTERNA field) + Update HubSpot + Download file + Attach
+  public async prepareOrderWithAttachment(dealId: string, nunota: string | number, fileId: string, obsInterna: string, rotaEntrega?: string, rotaEntrega2?: string) {
+    try {
+      console.log(`[PREPARE ORDER] Starting for Deal ${dealId}, NUNOTA ${nunota}, FileID ${fileId}, Rotas: ${rotaEntrega || 'N/A'}, ${rotaEntrega2 || 'N/A'}`);
+
+      // 1. Save observation and rotas to Sankhya (OBS_INTERNA field + delivery routes)
+      try {
+        const localFields: any = {
+          OBS_INTERNA: { "$": obsInterna }
+        };
+        const fieldsetList: string[] = ["OBS_INTERNA"];
+
+        // Add delivery routes if provided
+        if (rotaEntrega) {
+          localFields.ROTA_ENTREGA_1 = { "$": rotaEntrega };
+          fieldsetList.push("ROTA_ENTREGA_1");
+        }
+        if (rotaEntrega2) {
+          localFields.ROTA_ENTREGA_2 = { "$": rotaEntrega2 };
+          fieldsetList.push("ROTA_ENTREGA_2");
+        }
+
+        await sankhyaApi.post<any>(
+          '/gateway/v1/mge/service.sbr?serviceName=CRUDServiceProvider.saveRecord&outputType=json',
+          {
+            serviceName: "CRUDServiceProvider.saveRecord",
+            requestBody: {
+              dataSet: {
+                rootEntity: "CabecalhoNota",
+                includePresentationFields: "N",
+                dataRow: {
+                  localFields,
+                  key: {
+                    NUNOTA: { "$": nunota.toString() }
+                  }
+                },
+                entity: {
+                  fieldset: {
+                    list: fieldsetList.join(",")
+                  }
+                }
+              }
+            }
+          }
+        );
+        console.log(`[PREPARE ORDER] Sankhya saved successfully:`, fieldsetList);
+      } catch (obsErr: any) {
+        console.warn(`[PREPARE ORDER] Warning: Could not save data to Sankhya:`, obsErr.message);
+        // Don't throw - continue anyway
+      }
+
+      // 2. Update HubSpot properties (observacao_interna, rota_de_entrega_1, rota_de_entrega_2)
+      try {
+        const hsProps: any = {
+          observacao_interna: obsInterna
+        };
+        if (rotaEntrega) {
+          hsProps.rota_de_entrega_1 = rotaEntrega;
+        }
+        if (rotaEntrega2) {
+          hsProps.rota_de_entrega_2 = rotaEntrega2;
+        }
+        await hubspotApi.patch<any>(`/crm/v3/objects/deals/${dealId}`, {
+          properties: hsProps
+        });
+        console.log(`[PREPARE ORDER] HubSpot properties updated:`, Object.keys(hsProps));
+      } catch (hsErr: any) {
+        console.warn(`[PREPARE ORDER] Warning: Could not update HubSpot properties:`, hsErr.message);
+        // Don't throw - continue anyway
+      }
+
+      // 3. Fetch file metadata from HubSpot Files API
+      const fileResp = await hubspotApi.get<any>(`/files/v3/files/${fileId}`);
+      console.log(`[PREPARE ORDER] File metadata response:`, JSON.stringify(fileResp.data, null, 2));
+
+      const fileName = fileResp.data?.name || `pedido-${nunota}.pdf`;
+      const fileUrl = fileResp.data?.url;
+
+      if (!fileUrl) {
+        throw new Error(`File URL not found for ${fileId}. Response: ${JSON.stringify(fileResp.data)}`);
+      }
+
+      console.log(`[PREPARE ORDER] Downloading file ${fileId}: ${fileName}, URL: ${fileUrl}`);
+
+      // 4. Download file from HubSpot
+      let fileBase64: string;
+      try {
+        const fileContent = await hubspotApi.get<any>(fileUrl, { responseType: 'arraybuffer' });
+        fileBase64 = Buffer.from(fileContent.data).toString('base64');
+        console.log(`[PREPARE ORDER] File downloaded successfully, size: ${fileBase64.length}`);
+      } catch (downloadErr: any) {
+        console.error(`[PREPARE ORDER] Download error for URL ${fileUrl}:`, downloadErr.message);
+        throw downloadErr;
+      }
+
+      // 3. Attach file to Sankhya using Sankhya Gateway with FormData (multipart)
+      const sessionKey = `ANEXO_SISTEMA_CabecalhoNota_${nunota}`;
+      const params = new URLSearchParams({
+        sessionKey,
+        fitem: 'S'
+      });
+
+      console.log(`[PREPARE ORDER] Attaching to Sankhya with sessionKey: ${sessionKey}`);
+
+      // Use FormData for multipart upload (Sankhya expects this format)
+      const formData = new FormData();
+      formData.append('ARQUIVO', Buffer.from(fileBase64, 'base64'), fileName);
+      formData.append('DESCRICAO', 'Pedido Compra');
+
+      const annexResp = await sankhyaApi.post<any>(
+        `/gateway/v1/mge/service.sbr?${params}`,
+        formData,
+        {
+          headers: formData.getHeaders()
+        }
+      );
+
+      console.log(`[PREPARE ORDER] File attached to Sankhya successfully, response:`, annexResp.data);
+      return { success: true, message: 'Observação salva e arquivo anexado com sucesso!' };
+    } catch (err: any) {
+      console.error(`[PREPARE ORDER] Error:`, err.message);
+      return { success: false, error: err.message };
+    }
+  }
+
+  // Get available options for a HubSpot property
+  public async getPropertyOptions(propertyName: string) {
+    try {
+      console.log(`[PROPERTY OPTIONS] Fetching options for property: ${propertyName}`);
+
+      const response = await hubspotApi.get<any>(`/crm/v3/properties/deals/${propertyName}`);
+      const property = response.data;
+
+      console.log(`[PROPERTY OPTIONS] Full response for ${propertyName}:`, JSON.stringify(property, null, 2));
+
+      if (!property) {
+        return { success: false, options: [], error: 'Property not found' };
+      }
+
+      // Extract options from the property definition
+      const options = property.options || [];
+      console.log(`[PROPERTY OPTIONS] Found ${options.length} options for ${propertyName}`);
+      if (options.length > 0) {
+        console.log(`[PROPERTY OPTIONS] First option sample:`, JSON.stringify(options[0]));
+      }
+
+      // Format options for frontend Select component
+      const formattedOptions = options.map((opt: any) => ({
+        label: opt.label || opt.value,
+        value: opt.value
+      }));
+
+      console.log(`[PROPERTY OPTIONS] Formatted options:`, JSON.stringify(formattedOptions, null, 2));
+
+      return { success: true, options: formattedOptions };
+    } catch (err: any) {
+      console.error(`[PROPERTY OPTIONS] Error:`, err.message);
+      console.error(`[PROPERTY OPTIONS] Full error:`, err);
+      return { success: false, options: [], error: err.message };
     }
   }
 }

@@ -189,7 +189,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                     hubspot.fetch(`${BASE_API_URL}/hubspot/sync-quote-items`, {
                         method: "POST",
                         body: { dealId: context.crm.objectId, nunota: quoteStatus.nunota }
-                    }).catch(() => {}); // silencioso — componente já está desmontando
+                    }).catch(() => { }); // silencioso — componente já está desmontando
                 }
             }
         };
@@ -275,6 +275,11 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     const [dealAttachments, setDealAttachments] = useState<any[]>([]);
     const [selectedAttachmentId, setSelectedAttachmentId] = useState<string | null>(null);
     const [fetchingAttachments, setFetchingAttachments] = useState(false);
+    const [rotaEntrega, setRotaEntrega] = useState('');
+    const [rotaEntrega2, setRotaEntrega2] = useState('');
+    const [rotaEntregaOptions, setRotaEntregaOptions] = useState<Array<{label: string; value: string}>>([]);
+    const [rotaEntrega2Options, setRotaEntrega2Options] = useState<Array<{label: string; value: string}>>([]);
+    const [loadingRotas, setLoadingRotas] = useState(false);
     const [checkoutLoading, setCheckoutLoading] = useState(false);
     const [checkoutMessage, setCheckoutMessage] = useState<string | null>(null);
     const [checkoutError, setCheckoutError] = useState<string | null>(null);
@@ -359,18 +364,18 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     useEffect(() => {
         const loadInitialData = async () => {
             console.log("[HS-HANDSHAKE] Initializing Card for Deal:", context.crm.objectId);
-            
+
             try {
                 if (actions && actions.fetchCrmObjectProperties) {
                     // Force wait for HubSpot properties load before starting pricing logic
                     const props = await actions.fetchCrmObjectProperties(['codemp_sankhya', 'parceiro', 'dealname']);
-                    
+
                     if (props) {
                         setRecordReady(true);
                         // Start backend fetches sequentially
                         fetchPrices();
                         fetchQuoteStatus();
-                        
+
                         // Update local data context with HS props
                         if (props.codemp_sankhya || props.parceiro) {
                             setData(prev => prev ? { ...prev, codEmp: props.codemp_sankhya, codParceiro: props.parceiro } : { items: [], currentAmount: "0", currentStage: "", codEmp: props.codemp_sankhya, codParceiro: props.parceiro });
@@ -402,6 +407,88 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             });
         }
     }, [data]);
+
+    // Fetch Deal Attachments (moved to top level to comply with React hook rules)
+    const fetchDealAttachments = useCallback(async () => {
+        setFetchingAttachments(true);
+        try {
+            const resp = await hubspot.fetch(`${BASE_API_URL}/hubspot/deal/${context.crm.objectId}/attachments`);
+            const result = await resp.json();
+            if (result.success && result.attachments) {
+                setDealAttachments(result.attachments);
+            } else {
+                setDealAttachments([]);
+                console.warn("Nenhum anexo encontrado:", result.error);
+            }
+        } catch (e) {
+            console.error("Erro ao buscar anexos do Deal:", e);
+            setDealAttachments([]);
+        } finally {
+            setFetchingAttachments(false);
+        }
+    }, [context.crm.objectId]);
+
+    // Load attachments and deal properties when entering checkout sub-step 2 (Preparação)
+    useEffect(() => {
+        if (currentStep === 2 && checkoutSubStep === 2) {
+            fetchDealAttachments();
+
+            // Load existing obs and delivery routes from HubSpot
+            if (actions && actions.fetchCrmObjectProperties) {
+                actions.fetchCrmObjectProperties(['observacao_interna', 'rota_de_entrega_1', 'rota_de_entrega_2']).then((props: any) => {
+                    if (props?.observacao_interna) {
+                        setObsInterna(props.observacao_interna);
+                    }
+                    if (props?.rota_de_entrega_1) {
+                        setRotaEntrega(props.rota_de_entrega_1);
+                    }
+                    if (props?.rota_de_entrega_2) {
+                        setRotaEntrega2(props.rota_de_entrega_2);
+                    }
+                }).catch((err: any) => {
+                    console.warn('[PREPARACAO] Could not fetch deal properties:', err);
+                });
+            }
+
+            // Load available rota options for both fields
+            setLoadingRotas(true);
+            console.log('[PREPARACAO] Starting to load rota options from:', BASE_API_URL);
+            Promise.all([
+                hubspot.fetch(`${BASE_API_URL}/hubspot/property-options/rota_de_entrega_1`)
+                    .then(resp => {
+                        console.log('[PREPARACAO] Rota 1 response received:', resp.status, resp.statusText);
+                        return resp.json();
+                    }),
+                hubspot.fetch(`${BASE_API_URL}/hubspot/property-options/rota_de_entrega_2`)
+                    .then(resp => {
+                        console.log('[PREPARACAO] Rota 2 response received:', resp.status, resp.statusText);
+                        return resp.json();
+                    })
+            ])
+                .then(([data1, data2]: any) => {
+                    console.log('[PREPARACAO] Rota options loaded successfully:', { data1, data2 });
+                    console.log('[PREPARACAO] Data1 structure:', JSON.stringify(data1));
+                    console.log('[PREPARACAO] Data2 structure:', JSON.stringify(data2));
+                    if (data1?.success && data1.options && Array.isArray(data1.options)) {
+                        console.log('[PREPARACAO] Setting rota1 options:', data1.options.length, 'items');
+                        setRotaEntregaOptions(data1.options);
+                    } else {
+                        console.warn('[PREPARACAO] Rota1 data invalid or missing options:', { success: data1?.success, hasOptions: !!data1?.options, isArray: Array.isArray(data1?.options) });
+                    }
+                    if (data2?.success && data2.options && Array.isArray(data2.options)) {
+                        console.log('[PREPARACAO] Setting rota2 options:', data2.options.length, 'items');
+                        setRotaEntrega2Options(data2.options);
+                    } else {
+                        console.warn('[PREPARACAO] Rota2 data invalid or missing options:', { success: data2?.success, hasOptions: !!data2?.options, isArray: Array.isArray(data2?.options) });
+                    }
+                    setLoadingRotas(false);
+                })
+                .catch((err: any) => {
+                    console.error('[PREPARACAO] Error loading rota options:', err);
+                    setLoadingRotas(false);
+                });
+        }
+    }, [currentStep, checkoutSubStep, fetchDealAttachments, actions]);
 
     // Data Hash for Loop Prevention
     const lastDataHash = useRef<string>("");
@@ -494,7 +581,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 const result = await response.json();
                 if (result.success) {
                     setQuoteStatus(result.status);
-                    
+
                     // Refresh HubSpot UI if backend detected external changes (Auto-Discovery)
                     if (result.status?.didUpdateHubSpot) {
                         console.log("[AUTO-DISCOVERY] Backend sync detected. Refreshing UI properties.");
@@ -506,12 +593,12 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                     } else {
                         setPedidoNuUnico(null);
                     }
-                    
+
                     // Auto-avançar para a aba Fechamento se houver um orçamento/pedido confirmado
                     if (result.status?.isConfirmed && !hasAutoAdvancedRef.current) {
                         hasAutoAdvancedRef.current = true;
                         setCurrentStep(2);
-                        
+
                         const isBudgetDeal = result.status.dealtype === '999';
                         const nuPedido = result.status.nuPedido;
 
@@ -1042,7 +1129,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                     setSyncResult({ success: true, message: "✅ Sincronizado com sucesso!" });
                     setTimeout(() => setSyncResult(null), 5000);
                 }
-                
+
                 // Se o backend já devolveu o status (mais eficiente), atualiza o estado local
                 if (res.quoteStatus) {
                     setQuoteStatus(res.quoteStatus);
@@ -1511,33 +1598,6 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             }
         };
 
-        // Fetch attachments from backend (which queries HubSpot Engagements API)
-        const fetchDealAttachments = async () => {
-            setFetchingAttachments(true);
-            try {
-                const resp = await hubspot.fetch(`${BASE_API_URL}/hubspot/deal/${context.crm.objectId}/attachments`);
-                const data = await resp.json();
-                if (data.success && data.attachments) {
-                    setDealAttachments(data.attachments);
-                } else {
-                    setDealAttachments([]);
-                    console.warn("Nenhum anexo encontrado:", data.error);
-                }
-            } catch (e) {
-                console.error("Erro ao buscar anexos do Deal:", e);
-                setDealAttachments([]);
-            } finally {
-                setFetchingAttachments(false);
-            }
-        };
-
-        // Load attachments when entering checkout sub-step 2
-        useEffect(() => {
-            if (currentStep === 2 && checkoutSubStep === 2) {
-                fetchDealAttachments();
-            }
-        }, [currentStep, checkoutSubStep, context.crm.objectId]);
-
         // === Helper: Save obs + attach file (sub-step 2) ===
         const handlePrepareOrder = async () => {
             if (!obsInterna.trim()) {
@@ -1548,61 +1608,56 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 setCheckoutError('Selecione um anexo do Deal para continuar.');
                 return;
             }
+
+            // Validate if Rota de Entrega 1 is filled
+            if (!rotaEntrega.trim()) {
+                setCheckoutError('Rota de Entrega 1 é obrigatória. Por favor, preencha este campo antes de continuar.');
+                return;
+            }
             const nunotaToUse = pedidoNuUnico || quoteStatus?.nunota;
             if (!nunotaToUse) throw new Error('NUNOTA não identificado para preparação.');
 
-            console.log(`[handlePrepareOrder] Preparando NUNOTA ${nunotaToUse}...`);
+            const selectedNote = dealAttachments.find((a: any) => a.id === selectedAttachmentId);
+            if (!selectedNote || selectedNote.fileIds.length === 0) {
+                setCheckoutError('Arquivo não encontrado no Deal.');
+                return;
+            }
+
+            const fileId = selectedNote.fileIds[0];
+
+            console.log(`[handlePrepareOrder] Preparando NUNOTA ${nunotaToUse} com arquivo ${fileId}...`);
 
             setCheckoutLoading(true);
             setCheckoutError(null);
             try {
-                // 1. Salvar Observação
-                const obsResp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/obs/${nunotaToUse}`, {
-                    method: "PUT",
-                    body: { obs: obsInterna }
-                });
-                const obsRes = await obsResp.json();
-                if (!obsRes.success) throw new Error(obsRes.error || 'Falha ao salvar observação');
-
-                // 2. Buscar arquivo do HubSpot via Files API e anexar ao Sankhya
-                // Get the file ID from the selected attachment
-                const selectedNote = dealAttachments.find((a: any) => a.id === selectedAttachmentId);
-                if (!selectedNote || selectedNote.fileIds.length === 0) {
-                    throw new Error('Arquivo não encontrado no Deal.');
+                // Update HubSpot properties before saving to Sankhya
+                try {
+                    await actions.refreshObjectProperties();
+                } catch (err) {
+                    console.warn('Could not refresh properties:', err);
                 }
 
-                const fileId = selectedNote.fileIds[0];
-
-                // Fetch file metadata from HubSpot Files API
-                const fileResp = await hubspot.fetch(`https://api.hubapi.com/files/v3/files/${fileId}`);
-                const fileData = await fileResp.json();
-                const fileName = fileData.name || `pedido-${nunotaToUse}.pdf`;
-                const fileUrl = fileData.url;
-
-                // Download file and convert to base64 using browser APIs
-                const fileContent = await hubspot.fetch(fileUrl);
-                const blob = await fileContent.blob();
-                const arrayBuffer = await blob.arrayBuffer();
-
-                // Convert ArrayBuffer to base64 using browser's btoa()
-                const uint8Array = new Uint8Array(arrayBuffer);
-                const binaryString = String.fromCharCode.apply(null, Array.from(uint8Array) as any);
-                const fileBase64 = btoa(binaryString);
-
-                // Send to Sankhya
-                const anexoResp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/anexar`, {
+                // Call backend endpoint that handles everything:
+                // - Download file from HubSpot (solves 401 error)
+                // - Attach to Sankhya
+                // - Save obs to OBS_INTERNA field
+                const resp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/preparar`, {
                     method: "POST",
                     body: {
+                        dealId: context.crm.objectId,
                         nunota: nunotaToUse,
-                        descricao: 'Pedido Compra',
-                        fileBase64,
-                        fileName
+                        fileId,
+                        obsInterna,
+                        rotaEntrega,
+                        rotaEntrega2
                     }
                 });
-                const anexoRes = await anexoResp.json();
-                if (!anexoRes.success) throw new Error(anexoRes.error || 'Falha ao anexar arquivo');
+                const res = await resp.json();
+                if (!res.success) throw new Error(res.error || 'Falha na preparação do pedido');
 
                 setCheckoutMessage('Observação salva e arquivo anexado com sucesso!');
+                // Refresh HubSpot properties to sync observacao_interna and rota_de_entrega_1
+                onRefreshProperties();
                 setTimeout(() => setCheckoutSubStep(3), 1500);
             } catch (e: any) {
                 setCheckoutError(e.message);
@@ -1614,7 +1669,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         // === Helper: Confirm Order (sub-step 3) ===
         const handleConfirmOrder = async () => {
             const nunotaPedido = pedidoNuUnico || (isBudget ? null : quoteStatus?.nunota);
-            
+
             if (!nunotaPedido) {
                 setCheckoutError("Número único do pedido não identificado. Certifique-se de que o faturamento (evolução) foi concluído.");
                 return;
@@ -1712,7 +1767,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             if (checkoutSubStep === 0 && needsRelease) return 0;
 
             const hasNoValidPedido = !pedidoNuUnico || pedidoNuUnico === '--' || pedidoNuUnico === '0';
-            
+
             // If we're missing the order ID, we can't be in Preparation (2) or Confirmation (3)
             if (hasNoValidPedido && checkoutSubStep >= 2) {
                 return 1;
@@ -1886,11 +1941,11 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                 {effectiveSubStep === 1 && (
                                     <Flex direction="column" gap="md">
                                         <Flex direction="column" gap="extra-small" align="center">
-                                    <Heading>🚀 {(isBudget || !pedidoNuUnico || pedidoNuUnico === '--') ? "Gerar Pedido de Venda (1010)" : "Emitir Nota Fiscal (1100)"}</Heading>
+                                            <Heading>🚀 {(isBudget || !pedidoNuUnico || pedidoNuUnico === '--') ? "Gerar Pedido de Venda (1010)" : "Emitir Nota Fiscal (1100)"}</Heading>
                                             <Text variant="microcopy">
-                                                {(isBudget || !pedidoNuUnico || pedidoNuUnico === '--') 
-                                                  ? `O Orçamento #${quoteStatus?.nunota} está confirmado e pronto para virar um pedido oficial.`
-                                                  : `O Pedido #${quoteStatus?.nunota} está pronto para ser faturado e gerar a NF-e.`}
+                                                {(isBudget || !pedidoNuUnico || pedidoNuUnico === '--')
+                                                    ? `O Orçamento #${quoteStatus?.nunota} está confirmado e pronto para virar um pedido oficial.`
+                                                    : `O Pedido #${quoteStatus?.nunota} está pronto para ser faturado e gerar a NF-e.`}
                                             </Text>
                                         </Flex>
 
@@ -1909,7 +1964,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
                                                 <Flex justify="between" align="center">
                                                     <Text format={{ fontWeight: "bold" }}>Deseja selecionar itens para faturamento parcial?</Text>
-                                                    <Button 
+                                                    <Button
                                                         variant={isPartialBill ? "secondary" : "primary"}
                                                         onClick={() => {
                                                             const newValue = !isPartialBill;
@@ -1958,8 +2013,8 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                                                                         />
                                                                                     </TableCell>
                                                                                     <TableCell>
-                                                                                        <Button 
-                                                                                            variant={isRemoved ? "secondary" : "destructive"} 
+                                                                                        <Button
+                                                                                            variant={isRemoved ? "secondary" : "destructive"}
                                                                                             size="xs"
                                                                                             onClick={() => {
                                                                                                 const newQty = isRemoved ? it.qtdPendente : 0;
@@ -1980,10 +2035,10 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                                 )}
 
                                                 <Divider />
-                                                
-                                                <Button 
-                                                    variant="primary" 
-                                                    onClick={handleBillOrder} 
+
+                                                <Button
+                                                    variant="primary"
+                                                    onClick={handleBillOrder}
                                                     disabled={checkoutLoading || (isPartialBill && billableItems.length === 0)}
                                                 >
                                                     {checkoutLoading ? 'Processando...' : `🚀 ${(isBudget || !pedidoNuUnico || pedidoNuUnico === '--') ? 'Criar Pedido (1010)' : 'Faturar para NF-e (1100)'} ${isPartialBill ? 'Parcial' : ''}`}
@@ -1993,25 +2048,63 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                     </Flex>
                                 )}
 
-                                            {/* ========== SUB-STEP 2: PREPARAR PEDIDO ========== */}
-                                            {effectiveSubStep === 2 && (
+                                {/* ========== SUB-STEP 2: PREPARAR PEDIDO ========== */}
+                                {effectiveSubStep === 2 && (
                                     <Flex direction="column" gap="md">
                                         <Heading>📋 Preparar Pedido TOP 1010</Heading>
                                         <Text variant="microcopy">
-                                            {pedidoNuUnico 
-                                                ? `✅ Novo Pedido Gerado: #${pedidoNuUnico}` 
+                                            {pedidoNuUnico
+                                                ? `✅ Novo Pedido Gerado: #${pedidoNuUnico}`
                                                 : `🛠️ Configurando Pedido: #${quoteStatus?.nunota}`}
                                         </Text>
 
                                         <Divider />
 
-                                        <Input
-                                            label="Observação Interna (obrigatória)"
-                                            name="obs-interna"
-                                            value={obsInterna}
-                                            onChange={(val) => setObsInterna(val)}
-                                            placeholder="Ex.: Referente ao pedido de compra #12345..."
-                                        />
+                                        <Flex direction="row" gap="md">
+                                            <Box style={{ flex: 1 }}>
+                                                <Input
+                                                    label="Observação Interna (obrigatória)"
+                                                    name="obs-interna"
+                                                    value={obsInterna}
+                                                    onChange={(val) => setObsInterna(val)}
+                                                    placeholder="Ex.: Referente ao pedido de compra #12345..."
+                                                />
+                                            </Box>
+                                            <Box style={{ flex: 1 }}>
+                                                {loadingRotas ? (
+                                                    <LoadingSpinner label="Carregando rotas..." size="sm" />
+                                                ) : (
+                                                    <Select
+                                                        label="Rota de Entrega 1 (obrigatória)"
+                                                        name="rota-entrega-1"
+                                                        value={rotaEntrega}
+                                                        onChange={(val) => setRotaEntrega(val as string)}
+                                                        options={rotaEntregaOptions}
+                                                        placeholder="Selecione uma rota..."
+                                                    />
+                                                )}
+                                            </Box>
+                                        </Flex>
+
+                                        <Flex direction="row" gap="md">
+                                            <Box style={{ flex: 1 }}>
+                                                {/* Empty space for alignment */}
+                                            </Box>
+                                            <Box style={{ flex: 1 }}>
+                                                {loadingRotas ? (
+                                                    <LoadingSpinner label="Carregando rotas..." size="sm" />
+                                                ) : (
+                                                    <Select
+                                                        label="Rota de Entrega 2 (opcional)"
+                                                        name="rota-entrega-2"
+                                                        value={rotaEntrega2}
+                                                        onChange={(val) => setRotaEntrega2(val as string)}
+                                                        options={rotaEntrega2Options}
+                                                        placeholder="Selecione uma rota (opcional)..."
+                                                    />
+                                                )}
+                                            </Box>
+                                        </Flex>
 
                                         <Divider />
 
@@ -2041,6 +2134,9 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
                                         <Alert title="Como funciona" variant="info">
                                             Os arquivos são obtidos do card de Anexos nativo do HubSpot. Anexe o pedido de compra lá e ele aparecerá nesta lista.
+                                        </Alert>
+                                        <Alert title="Caso o arquivo não apareça" variant="info">
+                                            Se o arquivo não aparecer após adicionar em "Anexos", recarregue a página completamente.
                                         </Alert>
 
                                         <Button

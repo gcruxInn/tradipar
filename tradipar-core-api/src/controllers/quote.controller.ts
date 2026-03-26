@@ -93,6 +93,29 @@ export class QuoteController {
       res.status(200).json({ success: false, attachments: [], error: error.message });
     }
   }
+
+  // GET /hubspot/property-options/:propertyName - Get available options for a deal property
+  public async getPropertyOptions(req: Request, res: Response): Promise<void> {
+    const propertyName = req.params.propertyName as string;
+    try {
+      const result = await quoteService.getPropertyOptions(propertyName);
+      res.json(result);
+    } catch (error: any) {
+      console.error(`[QUOTE CONTROLLER] Error fetching property options for ${propertyName}:`, error.message);
+      res.status(200).json({ success: false, options: [], error: error.message });
+    }
+  }
+
+  // POST /sankhya/pedido/preparar - Save obs + Update HubSpot + Attach file (all in one)
+  public async prepareOrder(req: Request, res: Response): Promise<void> {
+    const { dealId, nunota, fileId, obsInterna, rotaEntrega, rotaEntrega2 } = req.body;
+    try {
+      const result = await quoteService.prepareOrderWithAttachment(dealId, nunota, fileId, obsInterna, rotaEntrega, rotaEntrega2);
+      res.status(200).json(result);
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
 }
 
 export const quoteController = new QuoteController();

@@ -49,6 +49,8 @@ app.get('/sankhya/check-profitability/:nunota', quoteController.checkProfitabili
 app.get('/sankhya/generate-pdf/:nunota', quoteController.generatePdf.bind(quoteController));
 app.post('/sankhya/pdf/attach', quoteController.attachPdf.bind(quoteController));
 app.get('/hubspot/deal/:dealId/attachments', quoteController.getDealAttachments.bind(quoteController));
+app.get('/hubspot/property-options/:propertyName', quoteController.getPropertyOptions.bind(quoteController));
+app.post('/sankhya/pedido/preparar', quoteController.prepareOrder.bind(quoteController));
 
 // Catalog Routes (Módulo 2 - Produtos, Preços e Estoque)
 // [DEPRECATED] app.get('/sankhya/stock-all-units/:codProd', catalogController.getStockAllUnits.bind(catalogController));
@@ -78,6 +80,7 @@ app.post('/sankhya/import/products', syncController.importProducts.bind(syncCont
 app.post('/debug/sql', discoveryController.debugSql.bind(discoveryController));
 app.get('/sankhya/discovery/quote-tables', discoveryController.discoveryQuoteTables.bind(discoveryController));
 app.get('/sankhya/discovery/services', discoveryController.discoveryServices.bind(discoveryController));
+app.get('/sankhya/discovery/delivery-routes', discoveryController.discoverySankhyaDeliveryRoutes.bind(discoveryController));
 app.get('/hubspot/debug/product-properties', discoveryController.debugProductProperties.bind(discoveryController));
 
 // Order & Approval Routes (Módulo 4 - Liberações, Pedidos)
