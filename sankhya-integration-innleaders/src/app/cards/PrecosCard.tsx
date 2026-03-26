@@ -1511,23 +1511,21 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             }
         };
 
-        // Fetch attachments from HubSpot Deal using Engagements API
+        // Fetch attachments from backend (which queries HubSpot Engagements API)
         const fetchDealAttachments = async () => {
             setFetchingAttachments(true);
             try {
-                const resp = await hubspot.fetch(`https://api.hubapi.com/crm/v3/objects/notes?associations.deal=${context.crm.objectId}&properties=hs_attachment_ids,hs_note_body,hs_timestamp`);
+                const resp = await hubspot.fetch(`${BASE_API_URL}/hubspot/deal/${context.crm.objectId}/attachments`);
                 const data = await resp.json();
-                const attachments = (data.results || [])
-                    .filter((note: any) => note.properties.hs_attachment_ids)
-                    .map((note: any) => ({
-                        id: note.id,
-                        fileIds: String(note.properties.hs_attachment_ids).split(';'),
-                        body: note.properties.hs_note_body,
-                        timestamp: note.properties.hs_timestamp
-                    }));
-                setDealAttachments(attachments);
+                if (data.success && data.attachments) {
+                    setDealAttachments(data.attachments);
+                } else {
+                    setDealAttachments([]);
+                    console.warn("Nenhum anexo encontrado:", data.error);
+                }
             } catch (e) {
                 console.error("Erro ao buscar anexos do Deal:", e);
+                setDealAttachments([]);
             } finally {
                 setFetchingAttachments(false);
             }

@@ -48,6 +48,7 @@ app.post('/hubspot/confirm-quote', quoteController.confirmQuote.bind(quoteContro
 app.get('/sankhya/check-profitability/:nunota', quoteController.checkProfitability.bind(quoteController));
 app.get('/sankhya/generate-pdf/:nunota', quoteController.generatePdf.bind(quoteController));
 app.post('/sankhya/pdf/attach', quoteController.attachPdf.bind(quoteController));
+app.get('/hubspot/deal/:dealId/attachments', quoteController.getDealAttachments.bind(quoteController));
 
 // Catalog Routes (Módulo 2 - Produtos, Preços e Estoque)
 // [DEPRECATED] app.get('/sankhya/stock-all-units/:codProd', catalogController.getStockAllUnits.bind(catalogController));

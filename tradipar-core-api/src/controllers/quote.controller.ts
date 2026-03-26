@@ -81,6 +81,18 @@ export class QuoteController {
       res.status(500).json({ success: false, error: error.message });
     }
   }
+
+  // GET /hubspot/deal/:dealId/attachments
+  public async getDealAttachments(req: Request, res: Response): Promise<void> {
+    const dealId = req.params.dealId as string;
+    try {
+      const result = await quoteService.getDealAttachments(dealId);
+      res.json(result);
+    } catch (error: any) {
+      console.error(`[QUOTE CONTROLLER] Error fetching attachments for ${dealId}:`, error.message);
+      res.status(200).json({ success: false, attachments: [], error: error.message });
+    }
+  }
 }
 
 export const quoteController = new QuoteController();

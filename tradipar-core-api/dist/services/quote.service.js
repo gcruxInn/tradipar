@@ -877,5 +877,27 @@ class QuoteService {
             message: `PDF ${nunota} anexado ao Deal ${dealId} com sucesso!`
         };
     }
+    // Get deal attachments via Engagements API
+    async getDealAttachments(dealId) {
+        try {
+            // Query notes associated with the deal that have attachments
+            const notesResp = await hubspot_api_1.hubspotApi.get(`/crm/v3/objects/notes?associations.deal=${dealId}&properties=hs_attachment_ids,hs_note_body,hs_timestamp&limit=100`);
+            const attachments = (notesResp.data?.results || [])
+                .filter((note) => note.properties.hs_attachment_ids)
+                .map((note) => ({
+                id: note.id,
+                fileIds: String(note.properties.hs_attachment_ids).split(';').filter((id) => id.trim()),
+                body: note.properties.hs_note_body || 'Anexo',
+                timestamp: note.properties.hs_timestamp
+            }))
+                .filter((att) => att.fileIds.length > 0);
+            console.log(`[DEAL ATTACHMENTS] Found ${attachments.length} attachments for deal ${dealId}`);
+            return { success: true, attachments };
+        }
+        catch (err) {
+            console.error(`[DEAL ATTACHMENTS] Error fetching attachments:`, err.message);
+            return { success: false, attachments: [], error: err.message };
+        }
+    }
 }
 exports.quoteService = new QuoteService();
