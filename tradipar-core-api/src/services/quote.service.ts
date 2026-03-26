@@ -1045,14 +1045,18 @@ class QuoteService {
     try {
       console.log(`[PREPARE ORDER] Starting for Deal ${dealId}, NUNOTA ${nunota}, FileID ${fileId}, Rotas: ${rotaEntrega || 'N/A'}, ${rotaEntrega2 || 'N/A'}`);
 
-      // 1. Save observation and rotas to Sankhya (OBS_INTERNA field + delivery routes)
+      // 1. Save observation and rotas to Sankhya
+      // NOTE: Field names might need adjustment - use discovery endpoint to verify:
+      // - OBSERVACAO is confirmed for observations
+      // - ROTA_ENTREGA_1, ROTA_ENTREGA_2 may be different (ROTAENTREGA, ROTA1, etc)
       try {
         const localFields: any = {
-          OBS_INTERNA: { "$": obsInterna }
+          OBSERVACAO: { "$": obsInterna }
         };
-        const fieldsetList: string[] = ["OBS_INTERNA"];
+        const fieldsetList: string[] = ["OBSERVACAO"];
 
         // Add delivery routes if provided
+        // TODO: Verify exact field names with discovery endpoint
         if (rotaEntrega) {
           localFields.ROTA_ENTREGA_1 = { "$": rotaEntrega };
           fieldsetList.push("ROTA_ENTREGA_1");
@@ -1135,29 +1139,37 @@ class QuoteService {
         throw downloadErr;
       }
 
-      // 3. Attach file to Sankhya using Sankhya Gateway with FormData (multipart)
-      const sessionKey = `ANEXO_SISTEMA_CabecalhoNota_${nunota}`;
-      const params = new URLSearchParams({
-        sessionKey,
-        fitem: 'S'
-      });
+      // 3. Attach file to Sankhya using sessionUpload.mge endpoint
+      const timestamp = Date.now().toString().substring(5);
+      const sessionKey = `ANEXO_SISTEMA_CabecalhoNota_${nunota}_${timestamp}`;
 
-      console.log(`[PREPARE ORDER] Attaching to Sankhya with sessionKey: ${sessionKey}`);
+      console.log(`[PREPARE ORDER] Attaching file to Sankhya with sessionKey: ${sessionKey}`);
 
-      // Use FormData for multipart upload (Sankhya expects this format)
+      // Use FormData for multipart upload (Sankhya requires specific format)
       const formData = new FormData();
-      formData.append('ARQUIVO', Buffer.from(fileBase64, 'base64'), fileName);
-      formData.append('DESCRICAO', 'Pedido Compra');
+      const fileBuffer = Buffer.from(fileBase64, 'base64');
+      formData.append('arquivo', fileBuffer, { filename: fileName, knownLength: fileBuffer.length });
+
+      const contentLength = formData.getLengthSync();
+      console.log(`[PREPARE ORDER] Uploading ${fileName} (${fileBuffer.length} bytes, Content-Length: ${contentLength})`);
 
       const annexResp = await sankhyaApi.post<any>(
-        `/gateway/v1/mge/service.sbr?${params}`,
+        `/gateway/v1/mge/sessionUpload.mge?sessionkey=${sessionKey}&fitem=S&salvar=S&useCache=N`,
         formData,
         {
-          headers: formData.getHeaders()
+          headers: {
+            ...formData.getHeaders(),
+            'Content-Length': contentLength,
+            'Accept': 'application/json'
+          },
+          timeout: 30000
         }
       );
 
-      console.log(`[PREPARE ORDER] File attached to Sankhya successfully, response:`, annexResp.data);
+      console.log(`[PREPARE ORDER] File attachment response status:`, annexResp.data?.status || 'unknown');
+      if (annexResp.data?.statusMessage) {
+        console.log(`[PREPARE ORDER] Sankhya response message:`, annexResp.data.statusMessage);
+      }
       return { success: true, message: 'Observação salva e arquivo anexado com sucesso!' };
     } catch (err: any) {
       console.error(`[PREPARE ORDER] Error:`, err.message);

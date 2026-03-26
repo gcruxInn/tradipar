@@ -2084,12 +2084,6 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                                     />
                                                 )}
                                             </Box>
-                                        </Flex>
-
-                                        <Flex direction="row" gap="md">
-                                            <Box style={{ flex: 1 }}>
-                                                {/* Empty space for alignment */}
-                                            </Box>
                                             <Box style={{ flex: 1 }}>
                                                 {loadingRotas ? (
                                                     <LoadingSpinner label="Carregando rotas..." size="sm" />
