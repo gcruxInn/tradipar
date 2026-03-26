@@ -1140,10 +1140,13 @@ class QuoteService {
       }
 
       // 3. Attach file to Sankhya using sessionUpload.mge endpoint
+      // IMPORTANT: CabecalhoNota does NOT support attachments via API
+      // Using ItemNota (first item) as per official Sankhya documentation
       const timestamp = Date.now().toString().substring(5);
-      const sessionKey = `ANEXO_SISTEMA_CabecalhoNota_${nunota}_${timestamp}`;
+      const itemSequencia = "1"; // First item in the order
+      const sessionKey = `ANEXO_SISTEMA_ItemNota_${nunota}_${itemSequencia}_${timestamp}`;
 
-      console.log(`[PREPARE ORDER] Attaching file to Sankhya with sessionKey: ${sessionKey}`);
+      console.log(`[PREPARE ORDER] Attaching file to ItemNota (sequence ${itemSequencia}) with sessionKey: ${sessionKey}`);
 
       // Use FormData for multipart upload (Sankhya requires specific format)
       const formData = new FormData();
@@ -1171,10 +1174,11 @@ class QuoteService {
         console.log(`[PREPARE ORDER] Upload response message:`, annexResp.data.statusMessage);
       }
 
-      // PART 2: Link the attachment to the CabecalhoNota record
+      // PART 2: Link the attachment to the ItemNota record
       // Service: AnexoSistemaSP.salvar
-      // This step is required to actually associate the file with the record
-      console.log(`[PREPARE ORDER] Part 2: Linking attachment to CabecalhoNota ${nunota}...`);
+      // Using ItemNota (not CabecalhoNota) as per official Sankhya documentation
+      // CabecalhoNota does NOT support attachments via API
+      console.log(`[PREPARE ORDER] Part 2: Linking attachment to ItemNota ${nunota}_${itemSequencia}...`);
       try {
         const linkResp = await sankhyaApi.post<any>(
           '/gateway/v1/mge/service.sbr?serviceName=AnexoSistemaSP.salvar&outputType=json',
@@ -1182,9 +1186,9 @@ class QuoteService {
             serviceName: 'AnexoSistemaSP.salvar',
             requestBody: {
               params: {
-                pkEntity: nunota.toString(),
+                pkEntity: `${nunota}_${itemSequencia}`,
                 keySession: sessionKey,
-                nameEntity: 'CabecalhoNota',
+                nameEntity: 'ItemNota',
                 description: 'Pedido Compra',
                 keyAttach: '',
                 typeAcess: 'ALL',
@@ -1198,10 +1202,10 @@ class QuoteService {
           }
         );
         console.log(`[PREPARE ORDER] Attachment link response:`, JSON.stringify(linkResp.data, null, 2));
-        console.log(`[PREPARE ORDER] File successfully linked to CabecalhoNota`);
+        console.log(`[PREPARE ORDER] File successfully linked to ItemNota`);
       } catch (linkErr: any) {
-        console.warn(`[PREPARE ORDER] Warning: Could not link attachment to CabecalhoNota:`, linkErr.message);
-        console.warn(`[PREPARE ORDER] This may indicate that CabecalhoNota does not support attachments via this API`);
+        console.warn(`[PREPARE ORDER] Warning: Could not link attachment to ItemNota:`, linkErr.message);
+        console.warn(`[PREPARE ORDER] Full error:`, JSON.stringify(linkErr.response?.data, null, 2) || linkErr.toString());
         // Don't throw - continue anyway
       }
 
