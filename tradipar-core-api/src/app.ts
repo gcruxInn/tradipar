@@ -54,7 +54,7 @@ app.post('/sankhya/pdf/attach', quoteController.attachPdf.bind(quoteController))
 // [DEPRECATED] app.post('/sankhya/stock-all-units', catalogController.getStockMultipleProducts.bind(catalogController));
 // [DEPRECATED] app.post('/hubspot/prices/deal', catalogController.getDealPrices.bind(catalogController));
 app.post('/hubspot/products/search', catalogController.searchProducts.bind(catalogController));
-// [DEPRECATED] app.get('/hubspot/products/controls/:codProd', catalogController.getProductControls.bind(catalogController));
+app.get('/hubspot/products/controls/:codProd', catalogController.getProductControls.bind(catalogController));
 // [DEPRECATED] app.get('/sankhya/debug/products', catalogController.debugProducts.bind(catalogController));
 // [DEPRECATED] app.get('/sankhya/debug/pricetables', catalogController.debugPriceTables.bind(catalogController));
 // [DEPRECATED] app.get('/sankhya/debug/price-scan', catalogController.debugPriceScan.bind(catalogController));

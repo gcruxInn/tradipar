@@ -5,6 +5,7 @@ const quote_service_1 = require("../services/quote.service");
 class QuoteController {
     async getQuoteStatus(req, res) {
         const { dealId } = req.params;
+        console.log(`[QuoteController] getQuoteStatus called for dealId:`, dealId);
         if (!dealId) {
             res.status(400).json({ success: false, error: "Missing dealId" });
             return;
@@ -16,7 +17,8 @@ class QuoteController {
         }
         catch (error) {
             console.error(`[QuoteController] Error getting status for deal ${dealId}:`, error.message);
-            res.status(500).json({ success: false, error: error.message });
+            // HTTP 200 para HubSpot ler o JSON (proxy bloqueia 5xx)
+            res.status(200).json({ success: false, error: error.message });
         }
     }
     async createQuote(req, res) {

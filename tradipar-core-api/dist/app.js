@@ -45,15 +45,15 @@ app.get('/sankhya/check-profitability/:nunota', quote_controller_1.quoteControll
 app.get('/sankhya/generate-pdf/:nunota', quote_controller_1.quoteController.generatePdf.bind(quote_controller_1.quoteController));
 app.post('/sankhya/pdf/attach', quote_controller_1.quoteController.attachPdf.bind(quote_controller_1.quoteController));
 // Catalog Routes (Módulo 2 - Produtos, Preços e Estoque)
-app.get('/sankhya/stock-all-units/:codProd', catalog_controller_1.catalogController.getStockAllUnits.bind(catalog_controller_1.catalogController));
-app.post('/sankhya/stock-all-units', catalog_controller_1.catalogController.getStockMultipleProducts.bind(catalog_controller_1.catalogController));
-app.post('/hubspot/prices/deal', catalog_controller_1.catalogController.getDealPrices.bind(catalog_controller_1.catalogController));
+// [DEPRECATED] app.get('/sankhya/stock-all-units/:codProd', catalogController.getStockAllUnits.bind(catalogController));
+// [DEPRECATED] app.post('/sankhya/stock-all-units', catalogController.getStockMultipleProducts.bind(catalogController));
+// [DEPRECATED] app.post('/hubspot/prices/deal', catalogController.getDealPrices.bind(catalogController));
 app.post('/hubspot/products/search', catalog_controller_1.catalogController.searchProducts.bind(catalog_controller_1.catalogController));
 app.get('/hubspot/products/controls/:codProd', catalog_controller_1.catalogController.getProductControls.bind(catalog_controller_1.catalogController));
-app.get('/sankhya/debug/products', catalog_controller_1.catalogController.debugProducts.bind(catalog_controller_1.catalogController));
-app.get('/sankhya/debug/pricetables', catalog_controller_1.catalogController.debugPriceTables.bind(catalog_controller_1.catalogController));
-app.get('/sankhya/debug/price-scan', catalog_controller_1.catalogController.debugPriceScan.bind(catalog_controller_1.catalogController));
-app.get('/sankhya/debug/price/:sku', catalog_controller_1.catalogController.debugPriceBySku.bind(catalog_controller_1.catalogController));
+// [DEPRECATED] app.get('/sankhya/debug/products', catalogController.debugProducts.bind(catalogController));
+// [DEPRECATED] app.get('/sankhya/debug/pricetables', catalogController.debugPriceTables.bind(catalogController));
+// [DEPRECATED] app.get('/sankhya/debug/price-scan', catalogController.debugPriceScan.bind(catalogController));
+// [DEPRECATED] app.get('/sankhya/debug/price/:sku', catalogController.debugPriceBySku.bind(catalogController));
 // Deal & Line Item Routes (Módulo 3)
 app.post('/hubspot/update/deal', deal_controller_1.dealController.updateDeal.bind(deal_controller_1.dealController));
 app.get('/hubspot/debug-deal/:dealId', deal_controller_1.dealController.debugDeal.bind(deal_controller_1.dealController));

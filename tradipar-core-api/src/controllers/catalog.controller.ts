@@ -34,10 +34,18 @@ export class CatalogController {
     }
   }
 
-  // GET /hubspot/products/controls/:codProd [DEPRECATED - Not Implemented]
-  // public async getProductControls(req: Request, res: Response): Promise<void> {
-  //   res.status(501).json({ success: false, error: "Method not implemented" });
-  // }
+  // GET /hubspot/products/controls/:codProd
+  public async getProductControls(req: Request, res: Response): Promise<void> {
+    try {
+      const codProd = req.params.codProd as string;
+      const codEmp = req.query.codEmp as string | undefined;
+      const result = await catalogService.getProductControls(codProd, codEmp);
+      res.json(result);
+    } catch (error: any) {
+      console.error(`[CATALOG CONTROLLER ERROR]`, error.message);
+      res.status(200).json({ success: false, error: error.message });
+    }
+  }
 
   // GET /sankhya/debug/products [DEPRECATED - Not Implemented]
   // public async debugProducts(req: Request, res: Response): Promise<void> {

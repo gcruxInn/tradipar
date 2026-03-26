@@ -98,12 +98,12 @@ class CatalogService {
   public async getProductLots(codProd: number | string) {
     console.log(`[CATALOG] Buscando lotes para produto ${codProd}...`);
     const sql = `
-      SELECT DISTINCT 
-        CONTROLE, 
+      SELECT DISTINCT
+        CONTROLE,
         ESTOQUE - RESERVADO AS SALDO,
         CODBARC AS CODIGOBARRAS
-      FROM TGFEST 
-      WHERE CODPROD = ${codProd} 
+      FROM TGFEST
+      WHERE CODPROD = ${codProd}
         AND (ESTOQUE - RESERVADO) > 0
         AND CONTROLE IS NOT NULL
         AND CONTROLE <> ' '
@@ -121,6 +121,22 @@ class CatalogService {
       console.error(`[CATALOG-LOTS] Erro: ${err.message}`);
       return [];
     }
+  }
+
+  /**
+   * Alias para getProductLots - retorna controles (lotes) com formato esperado pelo frontend
+   */
+  public async getProductControls(codProd: number | string, codEmp?: string) {
+    const lots = await this.getProductLots(codProd);
+    return {
+      success: true,
+      controls: lots.map((l: any) => ({
+        label: `${l.lote} (${l.saldo} un)`,
+        value: l.lote,
+        saldo: l.saldo,
+        codigoBarras: l.codigoBarras
+      }))
+    };
   }
 
   /**
