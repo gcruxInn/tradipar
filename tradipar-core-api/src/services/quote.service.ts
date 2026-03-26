@@ -1045,26 +1045,20 @@ class QuoteService {
     try {
       console.log(`[PREPARE ORDER] Starting for Deal ${dealId}, NUNOTA ${nunota}, FileID ${fileId}, Rotas: ${rotaEntrega || 'N/A'}, ${rotaEntrega2 || 'N/A'}`);
 
-      // 1. Save observation and rotas to Sankhya
-      // NOTE: Field names might need adjustment - use discovery endpoint to verify:
-      // - OBSERVACAO is confirmed for observations
-      // - ROTA_ENTREGA_1, ROTA_ENTREGA_2 may be different (ROTAENTREGA, ROTA1, etc)
+      // 1. Save observation to Sankhya
+      // Discovery results:
+      // - OBSERVACAO: standard field (VARCHAR2)
+      // - AD_OBSERVACAOINTERNA: custom field for internal observation
+      // - ROTA_ENTREGA_*: DOES NOT EXIST in TGFCAB
+      // NOTE: Delivery routes are stored in HubSpot only, not in Sankhya
       try {
         const localFields: any = {
-          OBSERVACAO: { "$": obsInterna }
+          AD_OBSERVACAOINTERNA: { "$": obsInterna }
         };
-        const fieldsetList: string[] = ["OBSERVACAO"];
+        const fieldsetList: string[] = ["AD_OBSERVACAOINTERNA"];
 
-        // Add delivery routes if provided
-        // TODO: Verify exact field names with discovery endpoint
-        if (rotaEntrega) {
-          localFields.ROTA_ENTREGA_1 = { "$": rotaEntrega };
-          fieldsetList.push("ROTA_ENTREGA_1");
-        }
-        if (rotaEntrega2) {
-          localFields.ROTA_ENTREGA_2 = { "$": rotaEntrega2 };
-          fieldsetList.push("ROTA_ENTREGA_2");
-        }
+        console.log(`[PREPARE ORDER] Saving observation to AD_OBSERVACAOINTERNA (custom field)`);
+        console.log(`[PREPARE ORDER] NOTE: Delivery routes (ROTA_ENTREGA_1/2) do not exist in TGFCAB - stored in HubSpot only`);
 
         const saveResp = await sankhyaApi.post<any>(
           '/gateway/v1/mge/service.sbr?serviceName=CRUDServiceProvider.saveRecord&outputType=json',
