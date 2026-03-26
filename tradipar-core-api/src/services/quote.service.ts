@@ -255,15 +255,27 @@ class QuoteService {
 
   public async getQuoteStatus(dealId: string) {
     const properties = [
-      'orcamento_sankhya', 
+      'orcamento_sankhya',
       'sankhya_nunota',
-      'sankhya_nu_unico_pedido', 
-      'sankhya_nu_unico_nfe', 
-      'dealname', 
-      'dealtype'
+      'sankhya_nunota_final',
+      'sankhya_nu_unico_pedido',
+      'sankhya_nu_unico_nfe',
+      'sankhya_nu_nota_pedido',
+      'dealname',
+      'dealtype',
+      'dealstage'
     ];
     const dealResp = await hubspotApi.get<any>(`/crm/v3/objects/deals/${dealId}?properties=${properties.join(',')}`);
     const props = dealResp.data.properties;
+    console.log(`[getQuoteStatus] DEBUG: Fetched HubSpot Deal ${dealId}. Props:`, JSON.stringify({
+      orcamento_sankhya: props.orcamento_sankhya,
+      sankhya_nunota: props.sankhya_nunota,
+      sankhya_nunota_final: props.sankhya_nunota_final,
+      sankhya_nu_unico_pedido: props.sankhya_nu_unico_pedido,
+      sankhya_nu_unico_nfe: props.sankhya_nu_unico_nfe,
+      sankhya_nu_nota_pedido: props.sankhya_nu_nota_pedido,
+      dealstage: props.dealstage
+    }));
     
     const dealname = props.dealname;
     let orcNunota = props.orcamento_sankhya || props.sankhya_nunota;
@@ -446,28 +458,41 @@ class QuoteService {
             (props.sankhya_nunota === String(orcNunota) || props.sankhya_nunota_final === String(orcNunota)) &&
             quoteNrNota === "0";
 
+        console.log(`[DEBUG] Integrity check: isMirroredAnomalous=${isMirroredAnomalous}, quoteNrNota="${quoteNrNota}", props.sankhya_nunota="${props.sankhya_nunota}"`);
         if (isMirroredAnomalous) {
             console.log(`[FAXINA] Detectada anomalia no Deal ${dealId}. Limpando espelhamento de ID único.`);
             updateProps.sankhya_nunota = "0";
             updateProps.sankhya_nunota_final = "";
             updateNeeded = true;
-        } 
+        }
         // Sync reverso: Se o Sankhya já tem um número real mas o HS ainda está em "0"
         else if (quoteNrNota !== "0" && props.sankhya_nunota === "0") {
             console.log(`[SYNC-REVERSO] Sincronizando número real ${quoteNrNota} para o HubSpot.`);
             updateProps.sankhya_nunota = quoteNrNota;
             updateNeeded = true;
+            console.log(`[SYNC-REVERSO] DEBUG: updateNeeded set to true, updateProps.sankhya_nunota="${updateProps.sankhya_nunota}"`);
         }
 
         // Execute HubSpot update AFTER all conditions (FAXINA, SYNC-REVERSO, etc.) have been evaluated
-        if (updateNeeded) {
+        console.log(`[getQuoteStatus] DEBUG: updateNeeded=${updateNeeded}, updatePropsKeys=${Object.keys(updateProps).join(',')}`);
+        if (updateNeeded && Object.keys(updateProps).length > 0) {
             console.log(`[getQuoteStatus] Auto-updating Deal ${dealId}:`, JSON.stringify(updateProps));
             try {
                 const hsResp = await hubspotApi.updateDeal(dealId, updateProps);
-                console.log(`[getQuoteStatus] HubSpot Sync Success for ${dealId}. Props:`, JSON.stringify(hsResp.properties));
+                console.log(`[getQuoteStatus] HubSpot Sync Success for ${dealId}. Response:`, JSON.stringify({
+                    status: hsResp?.status,
+                    id: hsResp?.id,
+                    properties: hsResp?.properties || {}
+                }));
             } catch (err: any) {
-                console.error(`[getQuoteStatus] HubSpot Sync Error for ${dealId}:`, err.response?.data || err.message);
+                console.error(`[getQuoteStatus] HubSpot Sync Error for ${dealId}:`, {
+                    status: err.response?.status,
+                    data: err.response?.data || err.message,
+                    updatePropsAttempted: updateProps
+                });
             }
+        } else if (updateNeeded && Object.keys(updateProps).length === 0) {
+            console.warn(`[getQuoteStatus] updateNeeded=true mas updateProps está vazio! Verificar lógica de condições.`);
         }
 
         // Fallback chain for nrNota displayed in the card: 
