@@ -1608,8 +1608,8 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 const res = await resp.json();
                 if (res.success) {
                     setCheckoutMessage(isBudget ? "Orçamento confirmado com sucesso!" : "Pedido confirmado com sucesso!");
-                    fetchQuoteStatus();
-                    onRefreshProperties();
+                    // Full page reload to sync all HubSpot properties and attachments across all cards
+                    setTimeout(() => actions.reloadPage(), 1500);
                 } else {
                     throw new Error(res.error || 'Falha na confirmação');
                 }
@@ -1647,12 +1647,13 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 if (res.success) {
                     setCheckoutMessage(res.message);
                     if (targetTOP === 1010) {
+                        // Evolving to TOP 1010: reload page to sync new order number and properties
                         setPedidoNuUnico(res.nuFaturamento);
-                        setTimeout(() => setCheckoutSubStep(2), 1500);
+                        setTimeout(() => actions.reloadPage(), 1500);
                     } else {
-                        setTimeout(() => fetchQuoteStatus(), 1500);
+                        // Generating NFe (TOP 1100): full page reload to show invoice details
+                        setTimeout(() => actions.reloadPage(), 1500);
                     }
-                    onRefreshProperties();
                 } else {
                     throw new Error(res.error || 'Falha no faturar');
                 }
