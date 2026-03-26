@@ -50,15 +50,15 @@ app.get('/sankhya/generate-pdf/:nunota', quoteController.generatePdf.bind(quoteC
 app.post('/sankhya/pdf/attach', quoteController.attachPdf.bind(quoteController));
 
 // Catalog Routes (Módulo 2 - Produtos, Preços e Estoque)
-app.get('/sankhya/stock-all-units/:codProd', catalogController.getStockAllUnits.bind(catalogController));
-app.post('/sankhya/stock-all-units', catalogController.getStockMultipleProducts.bind(catalogController));
-app.post('/hubspot/prices/deal', catalogController.getDealPrices.bind(catalogController));
+// [DEPRECATED] app.get('/sankhya/stock-all-units/:codProd', catalogController.getStockAllUnits.bind(catalogController));
+// [DEPRECATED] app.post('/sankhya/stock-all-units', catalogController.getStockMultipleProducts.bind(catalogController));
+// [DEPRECATED] app.post('/hubspot/prices/deal', catalogController.getDealPrices.bind(catalogController));
 app.post('/hubspot/products/search', catalogController.searchProducts.bind(catalogController));
-app.get('/hubspot/products/controls/:codProd', catalogController.getProductControls.bind(catalogController));
-app.get('/sankhya/debug/products', catalogController.debugProducts.bind(catalogController));
-app.get('/sankhya/debug/pricetables', catalogController.debugPriceTables.bind(catalogController));
-app.get('/sankhya/debug/price-scan', catalogController.debugPriceScan.bind(catalogController));
-app.get('/sankhya/debug/price/:sku', catalogController.debugPriceBySku.bind(catalogController));
+// [DEPRECATED] app.get('/hubspot/products/controls/:codProd', catalogController.getProductControls.bind(catalogController));
+// [DEPRECATED] app.get('/sankhya/debug/products', catalogController.debugProducts.bind(catalogController));
+// [DEPRECATED] app.get('/sankhya/debug/pricetables', catalogController.debugPriceTables.bind(catalogController));
+// [DEPRECATED] app.get('/sankhya/debug/price-scan', catalogController.debugPriceScan.bind(catalogController));
+// [DEPRECATED] app.get('/sankhya/debug/price/:sku', catalogController.debugPriceBySku.bind(catalogController));
 
 // Deal & Line Item Routes (Módulo 3)
 app.post('/hubspot/update/deal', dealController.updateDeal.bind(dealController));
