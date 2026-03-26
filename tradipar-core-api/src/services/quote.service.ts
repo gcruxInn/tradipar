@@ -376,16 +376,6 @@ class QuoteService {
             }
         }
 
-        if (updateNeeded) {
-            console.log(`[getQuoteStatus] Auto-updating Deal ${dealId}:`, JSON.stringify(updateProps));
-            try {
-                const hsResp = await hubspotApi.updateDeal(dealId, updateProps);
-                console.log(`[getQuoteStatus] HubSpot Sync Success for ${dealId}. Props:`, JSON.stringify(hsResp.properties));
-            } catch (err: any) {
-                console.error(`[getQuoteStatus] HubSpot Sync Error for ${dealId}:`, err.response?.data || err.message);
-            }
-        }
-
         // --- Standard status check for UI ---
         // Em vez de rodar um SQL novo, procuramos o orçamento original dentro dos resultados da descoberta (Unified)
         const quoteRow = childrenDetails.find(r => String(r[0]).trim() === String(orcNunota).trim());
@@ -467,6 +457,17 @@ class QuoteService {
             console.log(`[SYNC-REVERSO] Sincronizando número real ${quoteNrNota} para o HubSpot.`);
             updateProps.sankhya_nunota = quoteNrNota;
             updateNeeded = true;
+        }
+
+        // Execute HubSpot update AFTER all conditions (FAXINA, SYNC-REVERSO, etc.) have been evaluated
+        if (updateNeeded) {
+            console.log(`[getQuoteStatus] Auto-updating Deal ${dealId}:`, JSON.stringify(updateProps));
+            try {
+                const hsResp = await hubspotApi.updateDeal(dealId, updateProps);
+                console.log(`[getQuoteStatus] HubSpot Sync Success for ${dealId}. Props:`, JSON.stringify(hsResp.properties));
+            } catch (err: any) {
+                console.error(`[getQuoteStatus] HubSpot Sync Error for ${dealId}:`, err.response?.data || err.message);
+            }
         }
 
         // Fallback chain for nrNota displayed in the card: 
