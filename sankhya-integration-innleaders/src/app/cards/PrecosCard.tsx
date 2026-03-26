@@ -179,17 +179,38 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
         }, 2000);
     };
 
-    // Cleanup auto-sync timer on unmount
+    // Cleanup auto-sync timer on unmount + force sync if pending
     useEffect(() => {
-        return () => { if (autoSyncTimer.current) clearTimeout(autoSyncTimer.current); };
-    }, []);
+        return () => {
+            if (autoSyncTimer.current) {
+                clearTimeout(autoSyncTimer.current);
+                // Fire-and-forget sync: garante que nenhum input é perdido ao fechar o card
+                if (quoteStatus?.nunota && context.crm.objectId) {
+                    hubspot.fetch(`${BASE_API_URL}/hubspot/sync-quote-items`, {
+                        method: "POST",
+                        body: { dealId: context.crm.objectId, nunota: quoteStatus.nunota }
+                    }).catch(() => {}); // silencioso — componente já está desmontando
+                }
+            }
+        };
+    }, [quoteStatus?.nunota, context.crm.objectId]);
 
     // Batch Control State
     const [availableControls, setAvailableControls] = useState<Record<string, { controle: string, saldo: number }[]>>({});
 
     // Navigation State (Hybrid UI)
     const [currentStep, setCurrentStep] = useState(0); // 0: Handshake, 1: Items, 2: Checkout
+    const [isTransitioning, setIsTransitioning] = useState(false); // UX transição visual entre steps
     const [itemsTab, setItemsTab] = useState("list"); // "list" | "add"
+
+    // Helper para navegar entre steps com transição visual (500-800ms LoadingSpinner)
+    const navigateToStep = (step: number) => {
+        setIsTransitioning(true);
+        setTimeout(() => {
+            setCurrentStep(step);
+            setIsTransitioning(false);
+        }, 600);
+    };
 
     const fetchControlsForProduct = async (codProd: string, overrideCodEmp?: string | number) => {
         const targetCodEmp = overrideCodEmp !== undefined ? overrideCodEmp : (data?.codEmp || "");
@@ -990,11 +1011,10 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
                 {hasBudget && !!data?.codParceiro && (
                     <Button
-                        onClick={() => setCurrentStep(isConfirmed ? 2 : 1)}
+                        onClick={() => navigateToStep(isConfirmed ? 2 : 1)}
                         variant="primary"
-                        disabled={!data?.items || data.items.length === 0}
                     >
-                        {isConfirmed ? '📋 Ver Resumo de Fechamento →' : (data?.items && data.items.length > 0 ? 'Avançar para Produtos →' : 'Adicionar Itens para continuar')}
+                        {isConfirmed ? '📋 Ver Resumo de Fechamento →' : 'Avançar para Produtos →'}
                     </Button>
                 )}
             </Flex>
@@ -1332,7 +1352,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                     </Alert>
                 )}
                 <Flex gap="sm" justify="between">
-                    <Button onClick={() => setCurrentStep(0)} variant="secondary">&larr; Voltar para Conexão</Button>
+                    <Button onClick={() => navigateToStep(0)} variant="secondary">&larr; Voltar para Conexão</Button>
                     <Button
                         onClick={() => {
                             const needsRelease = quoteStatus?.profitability && !quoteStatus.profitability.isRentavel;
@@ -1340,7 +1360,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                             setCheckoutSubStep(needsRelease ? 0 : 1);
                             setCheckoutError(null);
                             setCheckoutMessage(null);
-                            setCurrentStep(2);
+                            navigateToStep(2);
                         }}
                         variant="primary"
                     >
@@ -2047,7 +2067,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                     </Flex>
                 </Tile>
 
-                <Button onClick={() => setCurrentStep(1)} variant="secondary">&larr; Voltar para Itens</Button>
+                <Button onClick={() => navigateToStep(1)} variant="secondary">&larr; Voltar para Itens</Button>
             </Flex>
         );
     };
@@ -2062,6 +2082,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
     if (!recordReady) return <LoadingSpinner label="Lendo dados do Negócio..." showLabel />;
     if (loading) return <LoadingSpinner label="Conectando ao Sankhya Om..." showLabel />;
+    if (isTransitioning) return <LoadingSpinner label="Carregando..." showLabel size="lg" />;
 
     if (error) return (
         <Flex direction="column" gap="sm">

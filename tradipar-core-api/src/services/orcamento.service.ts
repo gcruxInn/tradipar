@@ -142,17 +142,48 @@ export class OrcamentoService {
       console.warn(`[OrcamentoService] Failed to evaluate auto CODNAT/NUMNOTA: ${e.message}`);
     }
 
-    // 9. Update HubSpot Deal
-    try {
-      await hubspotApi.updateDeal(dealId, {
-        orcamento_sankhya: nunota.toString(),
-        sankhya_nunota: "0",
-        natureza_id: codNat.toString(),
-        dealstage: 'qualifiedtobuy'
-      });
-      console.log(`[OrcamentoService] Deal ${dealId} synced with NUNOTA ${nunota}`);
-    } catch (e: any) {
-      console.warn(`[OrcamentoService] Deal sync failed but NUNOTA was created: ${e.message}`);
+    // 9. Update HubSpot Deal (Self-protection: retry + rollback if fails)
+    let hsUpdateSuccess = false;
+    let lastError: any = null;
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await hubspotApi.updateDeal(dealId, {
+          orcamento_sankhya: nunota.toString(),
+          sankhya_nunota: "0",
+          natureza_id: codNat.toString(),
+          dealstage: 'qualifiedtobuy'
+        });
+        console.log(`[OrcamentoService] Deal ${dealId} synced with NUNOTA ${nunota}`);
+        hsUpdateSuccess = true;
+        break;
+      } catch (e: any) {
+        lastError = e;
+        console.warn(`[OrcamentoService] Tentativa ${attempt}/3 de sincronizar Deal falhou: ${e.message}`);
+        if (attempt < 3) {
+          await new Promise(r => setTimeout(r, 1000)); // 1s delay before retry
+        }
+      }
+    }
+
+    // Se falhar após 3 tentativas, fazer rollback no Sankhya (excluir o cabeçalho criado)
+    if (!hsUpdateSuccess) {
+      console.error(`[OrcamentoService] COMPENSAÇÃO: Deletando NUNOTA ${nunota} no Sankhya após falha do HubSpot...`);
+      try {
+        const deletePayload = {
+          serviceName: "CACSP.excluirNota",
+          requestBody: {
+            nota: {
+              NUNOTA: { "$": String(nunota) }
+            }
+          }
+        };
+        await sankhyaApi.post<any>('/gateway/v1/mgecom/service.sbr?serviceName=CACSP.excluirNota&outputType=json', deletePayload);
+        console.warn(`[OrcamentoService] NUNOTA ${nunota} deletada com sucesso (compensação).`);
+      } catch (deleteErr: any) {
+        console.error(`[OrcamentoService] Falha ao deletar NUNOTA ${nunota} como compensação: ${deleteErr.message}. ÓRFÃO!`);
+      }
+      throw lastError; // Re-throw para o controller informar o cliente
     }
 
     return { nunota, codnat: codNat };

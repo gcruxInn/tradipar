@@ -24,9 +24,9 @@ export class OrcamentoController {
       
     } catch (error: any) {
       console.error(`[OrcamentoController] Error generating header for deal ${dealId}:`, error.message);
-      
-      // We log the detailed message but we can abstract it or return it directly relying on the internal architecture
-      res.status(500).json({
+
+      // HTTP 200 para HubSpot ler o JSON (proxy bloqueia 5xx)
+      res.status(200).json({
         success: false,
         error: error.message || 'Erro inesperado na geração do Cabeçalho Sankhya. Verifique os logs da core-api.'
       });
@@ -56,8 +56,9 @@ export class OrcamentoController {
       
     } catch (error: any) {
       console.error(`[OrcamentoController] Error syncing items for deal ${dealId}:`, error.message);
-      
-      res.status(500).json({
+
+      // HTTP 200 para HubSpot ler o JSON (proxy bloqueia 5xx)
+      res.status(200).json({
         success: false,
         error: error.message || 'Erro inesperado na sincronização de itens do Sankhya.'
       });
