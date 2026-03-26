@@ -272,8 +272,9 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     const [releaseEvents, setReleaseEvents] = useState<any[]>([]);
     const [pedidoNuUnico, setPedidoNuUnico] = useState<string | null>(null);
     const [obsInterna, setObsInterna] = useState('');
-    const [pedidoAnexoBase64, setPedidoAnexoBase64] = useState<string | null>(null);
-    const [pedidoAnexoName, setPedidoAnexoName] = useState<string | null>(null);
+    const [dealAttachments, setDealAttachments] = useState<any[]>([]);
+    const [selectedAttachmentId, setSelectedAttachmentId] = useState<string | null>(null);
+    const [fetchingAttachments, setFetchingAttachments] = useState(false);
     const [checkoutLoading, setCheckoutLoading] = useState(false);
     const [checkoutMessage, setCheckoutMessage] = useState<string | null>(null);
     const [checkoutError, setCheckoutError] = useState<string | null>(null);
@@ -1510,33 +1511,43 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             }
         };
 
-        const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-            const file = e.target.files?.[0];
-            if (file) {
-                if (file.size > 2 * 1024 * 1024) { // 2MB limit
-                    setCheckoutError('O arquivo excede o tamanho máximo de 2MB.');
-                    setPedidoAnexoName(null);
-                    setPedidoAnexoBase64(null);
-                    return;
-                }
-                const reader = new FileReader();
-                reader.onloadend = () => {
-                    const base64String = (reader.result as string).split(',')[1];
-                    setPedidoAnexoBase64(base64String);
-                    setPedidoAnexoName(file.name);
-                    setCheckoutError(null);
-                };
-                reader.readAsDataURL(file);
-            } else {
-                setPedidoAnexoName(null);
-                setPedidoAnexoBase64(null);
+        // Fetch attachments from HubSpot Deal using Engagements API
+        const fetchDealAttachments = async () => {
+            setFetchingAttachments(true);
+            try {
+                const resp = await hubspot.fetch(`https://api.hubapi.com/crm/v3/objects/notes?associations.deal=${context.crm.objectId}&properties=hs_attachment_ids,hs_note_body,hs_timestamp`);
+                const data = await resp.json();
+                const attachments = (data.results || [])
+                    .filter((note: any) => note.properties.hs_attachment_ids)
+                    .map((note: any) => ({
+                        id: note.id,
+                        fileIds: String(note.properties.hs_attachment_ids).split(';'),
+                        body: note.properties.hs_note_body,
+                        timestamp: note.properties.hs_timestamp
+                    }));
+                setDealAttachments(attachments);
+            } catch (e) {
+                console.error("Erro ao buscar anexos do Deal:", e);
+            } finally {
+                setFetchingAttachments(false);
             }
         };
+
+        // Load attachments when entering checkout
+        useEffect(() => {
+            if (currentStep === 2 && checkoutSubStep === 2) {
+                fetchDealAttachments();
+            }
+        }, [currentStep, checkoutSubStep]);
 
         // === Helper: Save obs + attach file (sub-step 2) ===
         const handlePrepareOrder = async () => {
             if (!obsInterna.trim()) {
                 setCheckoutError('Observação interna é obrigatória.');
+                return;
+            }
+            if (!selectedAttachmentId) {
+                setCheckoutError('Selecione um anexo do Deal para continuar.');
                 return;
             }
             const nunotaToUse = pedidoNuUnico || quoteStatus?.nunota;
@@ -1555,18 +1566,31 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 const obsRes = await obsResp.json();
                 if (!obsRes.success) throw new Error(obsRes.error || 'Falha ao salvar observação');
 
-                // 2. Anexar arquivo obrigatório
-                if (!pedidoAnexoBase64 || !pedidoAnexoName) {
-                    throw new Error('Arquivo é obrigatório. Por favor, anexe um arquivo antes de continuar.');
+                // 2. Buscar arquivo do HubSpot via Files API e anexar ao Sankhya
+                // Get the file ID from the selected attachment
+                const selectedNote = dealAttachments.find((a: any) => a.id === selectedAttachmentId);
+                if (!selectedNote || selectedNote.fileIds.length === 0) {
+                    throw new Error('Arquivo não encontrado no Deal.');
                 }
 
+                const fileId = selectedNote.fileIds[0];
+                const fileResp = await hubspot.fetch(`https://api.hubapi.com/files/v3/files/${fileId}`);
+                const fileData = await fileResp.json();
+
+                // Download file and convert to base64
+                const fileUrl = fileData.url;
+                const fileContent = await fetch(fileUrl).then(r => r.arrayBuffer());
+                const fileBase64 = Buffer.from(fileContent).toString('base64');
+                const fileName = fileData.name || `pedido-${nunotaToUse}.pdf`;
+
+                // Send to Sankhya
                 const anexoResp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/anexar`, {
                     method: "POST",
                     body: {
                         nunota: nunotaToUse,
                         descricao: 'Pedido Compra',
-                        fileBase64: pedidoAnexoBase64,
-                        fileName: pedidoAnexoName
+                        fileBase64,
+                        fileName
                     }
                 });
                 const anexoRes = await anexoResp.json();
@@ -1985,37 +2009,38 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
                                         <Divider />
 
-                                        <Text format={{ fontWeight: "bold" }}>📎 Anexar Pedido (Obrigatório, máx 2MB)</Text>
+                                        <Text format={{ fontWeight: "bold" }}>📎 Selecionar Anexo (Obrigatório)</Text>
 
-                                        <Flex direction="column" gap="sm">
-                                            {pedidoAnexoName ? (
-                                                <Tag variant="success">✅ {pedidoAnexoName}</Tag>
-                                            ) : (
-                                                // @ts-ignore
-                                                <Input type="file" name="file-pedido" onChange={handleFileChange as any} accept="*" />
-                                            )}
-                                            {pedidoAnexoBase64 && (
-                                                <Button
-                                                    onClick={() => {
-                                                        setPedidoAnexoBase64(null);
-                                                        setPedidoAnexoName(null);
-                                                    }}
-                                                    size="xs"
-                                                    variant="secondary"
-                                                >
-                                                    🗑️ Remover anexo
-                                                </Button>
-                                            )}
-                                        </Flex>
+                                        {fetchingAttachments ? (
+                                            <LoadingSpinner label="Carregando anexos do Deal..." size="sm" />
+                                        ) : dealAttachments.length === 0 ? (
+                                            <Alert title="Nenhum anexo encontrado" variant="warning">
+                                                Nenhum arquivo foi anexado ao Deal ainda. Use o card de Anexos nativo do HubSpot para anexar o pedido de compra.
+                                            </Alert>
+                                        ) : (
+                                            <Select
+                                                label="Escolha o arquivo para enviar ao Sankhya"
+                                                name="attachment-select"
+                                                options={dealAttachments.flatMap((att: any) =>
+                                                    att.fileIds.map((fileId: string, idx: number) => ({
+                                                        label: `${att.body || 'Anexo'} - ${new Date(att.timestamp).toLocaleDateString('pt-BR')}`,
+                                                        value: att.id
+                                                    }))
+                                                )}
+                                                value={selectedAttachmentId || ""}
+                                                onChange={(val) => setSelectedAttachmentId(val as string)}
+                                                placeholder="Selecione um anexo..."
+                                            />
+                                        )}
 
-                                        <Alert title="Arquivo obrigatório" variant="info">
-                                            Anexe o pedido de compra ou qualquer documentação relacionada (até 2MB). Este arquivo será vinculado ao pedido no Sankhya TOP 1010.
+                                        <Alert title="Como funciona" variant="info">
+                                            Os arquivos são obtidos do card de Anexos nativo do HubSpot. Anexe o pedido de compra lá e ele aparecerá nesta lista.
                                         </Alert>
 
                                         <Button
                                             variant="primary"
                                             onClick={handlePrepareOrder}
-                                            disabled={checkoutLoading || !obsInterna.trim() || !pedidoAnexoBase64}
+                                            disabled={checkoutLoading || !obsInterna.trim() || !selectedAttachmentId || fetchingAttachments}
                                         >
                                             {checkoutLoading ? 'Enviando...' : '📤 Enviar OBS, Anexar e Avançar'}
                                         </Button>
