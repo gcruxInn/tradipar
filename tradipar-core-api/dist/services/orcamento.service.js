@@ -123,18 +123,48 @@ class OrcamentoService {
         catch (e) {
             console.warn(`[OrcamentoService] Failed to evaluate auto CODNAT/NUMNOTA: ${e.message}`);
         }
-        // 9. Update HubSpot Deal
-        try {
-            await hubspot_api_1.hubspotApi.updateDeal(dealId, {
-                orcamento_sankhya: nunota.toString(),
-                sankhya_nunota: "0",
-                natureza_id: codNat.toString(),
-                dealstage: 'qualifiedtobuy'
-            });
-            console.log(`[OrcamentoService] Deal ${dealId} synced with NUNOTA ${nunota}`);
+        // 9. Update HubSpot Deal (Self-protection: retry + rollback if fails)
+        let hsUpdateSuccess = false;
+        let lastError = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                await hubspot_api_1.hubspotApi.updateDeal(dealId, {
+                    orcamento_sankhya: nunota.toString(),
+                    sankhya_nunota: "0",
+                    natureza_id: codNat.toString(),
+                    dealstage: 'qualifiedtobuy'
+                });
+                console.log(`[OrcamentoService] Deal ${dealId} synced with NUNOTA ${nunota}`);
+                hsUpdateSuccess = true;
+                break;
+            }
+            catch (e) {
+                lastError = e;
+                console.warn(`[OrcamentoService] Tentativa ${attempt}/3 de sincronizar Deal falhou: ${e.message}`);
+                if (attempt < 3) {
+                    await new Promise(r => setTimeout(r, 1000)); // 1s delay before retry
+                }
+            }
         }
-        catch (e) {
-            console.warn(`[OrcamentoService] Deal sync failed but NUNOTA was created: ${e.message}`);
+        // Se falhar após 3 tentativas, fazer rollback no Sankhya (excluir o cabeçalho criado)
+        if (!hsUpdateSuccess) {
+            console.error(`[OrcamentoService] COMPENSAÇÃO: Deletando NUNOTA ${nunota} no Sankhya após falha do HubSpot...`);
+            try {
+                const deletePayload = {
+                    serviceName: "CACSP.excluirNota",
+                    requestBody: {
+                        nota: {
+                            NUNOTA: { "$": String(nunota) }
+                        }
+                    }
+                };
+                await sankhya_api_1.sankhyaApi.post('/gateway/v1/mgecom/service.sbr?serviceName=CACSP.excluirNota&outputType=json', deletePayload);
+                console.warn(`[OrcamentoService] NUNOTA ${nunota} deletada com sucesso (compensação).`);
+            }
+            catch (deleteErr) {
+                console.error(`[OrcamentoService] Falha ao deletar NUNOTA ${nunota} como compensação: ${deleteErr.message}. ÓRFÃO!`);
+            }
+            throw lastError; // Re-throw para o controller informar o cliente
         }
         return { nunota, codnat: codNat };
     }

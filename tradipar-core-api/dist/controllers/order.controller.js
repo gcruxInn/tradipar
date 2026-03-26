@@ -170,7 +170,7 @@ class OrderController {
         }
         catch (error) {
             console.error(`[PEDIDO FATURAR ERROR] ${error.message}`);
-            res.status(500).json({ success: false, error: error.message });
+            res.status(200).json({ success: false, error: error.message });
         }
     }
     // GET /sankhya/itens-faturaveis/:nunota

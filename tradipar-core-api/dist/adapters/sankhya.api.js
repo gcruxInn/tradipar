@@ -28,6 +28,20 @@ class SankhyaAdapter {
             config.headers['Authorization'] = `Bearer ${token}`;
             return config;
         });
+        // Response interceptor to handle expired/invalid token (401)
+        this.api.interceptors.response.use((response) => response, async (error) => {
+            const config = error.config;
+            if (error.response?.status === 401 && !config._retry) {
+                config._retry = true;
+                console.log('[SANKHYA-AUTH] 401 detected. Forcing token renewal...');
+                this.token = null;
+                this.tokenExpiry = null;
+                const newToken = await this.fetchNewToken();
+                config.headers['Authorization'] = `Bearer ${newToken}`;
+                return this.api(config);
+            }
+            throw error;
+        });
     }
     async fetchNewToken() {
         console.log('[SANKHYA-AUTH] Fetching new access_token...');

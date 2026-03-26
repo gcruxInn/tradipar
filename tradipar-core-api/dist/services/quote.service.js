@@ -7,6 +7,24 @@ exports.quoteService = void 0;
 const sankhya_api_1 = require("../adapters/sankhya.api");
 const hubspot_api_1 = require("../adapters/hubspot.api");
 const form_data_1 = __importDefault(require("form-data"));
+// Error parser: Translate Sankhya technical errors to user-friendly messages
+function parseSankhyaError(rawMsg) {
+    const msg = String(rawMsg || '').toLowerCase();
+    if (msg.includes('estoque') || msg.includes('saldo insuficiente'))
+        return 'Estoque insuficiente para faturar este item.';
+    if (msg.includes('cfop'))
+        return 'Erro de CFOP: configuração fiscal incorreta. Contate o suporte.';
+    if (msg.includes('crédito') || msg.includes('limite'))
+        return 'Cliente sem limite de crédito disponível.';
+    if (msg.includes('bloqueado') || msg.includes('liberação'))
+        return 'Pedido aguardando aprovação/liberação.';
+    if (msg.includes('nota já foi faturada') || msg.includes('já faturada'))
+        return 'Esta nota já foi faturada anteriormente.';
+    if (msg.includes('série') || msg.includes('numeração'))
+        return 'Erro de numeração fiscal. Contate o suporte.';
+    // Clean generic message (no stack trace)
+    return rawMsg.split('\n')[0].slice(0, 200);
+}
 class QuoteService {
     async createQuote(dealId) {
         console.log(`[QUOTE] Buscando Deal ${dealId}...`);
@@ -498,32 +516,11 @@ class QuoteService {
         const nuUnicoPedido = pedidoRow?.[0] || null;
         const nrNotaPedido = pedidoRow?.[1] || null;
         const nrPedidoVenda = pedidoRow?.[2] || null;
-        // Gap 1 Fix: Auto-confirm the generated TOP 1010 order (se existir via trigger Sankhya)
+        // --- REVERTED GAP 1: TOP 1010 must NOT be confirmed automatically ---
+        // Business Rule: The seller needs to make manual adjustments (freight, attachments, whatsapp screenshots)
+        // in Sankhya before confirming the Order.
         if (nuUnicoPedido) {
-            console.log(`[PEDIDO] Auto-confirmando pedido gerado NUNOTA=${nuUnicoPedido}...`);
-            try {
-                const confirmPedidoResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mgecom/service.sbr?serviceName=CACSP.confirmarNota&outputType=json', {
-                    serviceName: "CACSP.confirmarNota",
-                    requestBody: { nota: { NUNOTA: { "$": String(nuUnicoPedido) } } }
-                });
-                if (confirmPedidoResp.data.status === "1") {
-                    console.log(`[PEDIDO] Confirmado com sucesso NUNOTA=${nuUnicoPedido}`);
-                }
-                else {
-                    const msg = confirmPedidoResp.data.statusMessage || 'Erro desconhecido';
-                    const normalizedMsg = msg.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-                    if (normalizedMsg.includes('ja foi confirmada') || normalizedMsg.includes('ja confirmada')) {
-                        console.log(`[PEDIDO] NUNOTA=${nuUnicoPedido} já estava confirmado.`);
-                    }
-                    else {
-                        console.warn(`[PEDIDO] Falha ao confirmar NUNOTA=${nuUnicoPedido}: ${msg}`);
-                    }
-                }
-            }
-            catch (e) {
-                console.error(`[PEDIDO] Erro ao auto-confirmar NUNOTA=${nuUnicoPedido}:`, e.message);
-                // Non-blocking: continue with HubSpot update even if auto-confirm fails
-            }
+            console.log(`[PEDIDO] Pedido gerado NUNOTA=${nuUnicoPedido}. Aguardando confirmação manual no Sankhya.`);
         }
         const nrNotaSafe = (nrNota && Number(nrNota) !== 0 && String(nrNota) !== String(confirmedNunota)) ? String(nrNota) : "0";
         const dealProperties = {
@@ -678,7 +675,7 @@ class QuoteService {
         }
         if (billResp.data.status !== "1") {
             console.error(`[ORDER BILLING] All billing attempts failed:`, billResp.data);
-            throw new Error(`Falha ao faturar pedido: ${billResp.data.statusMessage || JSON.stringify(billResp.data)}`);
+            throw new Error(parseSankhyaError(billResp.data.statusMessage || JSON.stringify(billResp.data)));
         }
         // Capture the new NUNOTA 
         const nuFaturamento = billResp.data?.responseBody?.pk?.NUNOTA
@@ -718,6 +715,17 @@ class QuoteService {
             const displayNrNota = (nrNotaGerada && nrNotaGerada !== "0" && Number(nrNotaGerada) !== 0) ? nrNotaGerada : finalNuNota;
             updateProps.sankhya_nunota_final = String(displayNrNota || "");
             updateProps.nu_final_faturamento = String(finalNuNota || "");
+            // Attach DANFE BEFORE moving to closed-won (Self-healing with retry)
+            let danfeAttached = false;
+            try {
+                await this.withRetry(() => this.attachPdfToHubspot(dealId, finalNuNota));
+                danfeAttached = true;
+                console.log(`[ORDER BILLING] DANFE para ${finalNuNota} anexada com sucesso.`);
+            }
+            catch (danfeErr) {
+                console.error(`[ORDER BILLING] Falha ao anexar DANFE após retries: ${danfeErr.message}`);
+            }
+            // Move to "Closed Won" (always, even if DANFE attachment failed)
             updateProps.dealstage = 'closedwon';
         }
         console.log(`[ORDER BILLING] Atualizando Deal ${dealId} no HubSpot:`, JSON.stringify(updateProps));
@@ -728,6 +736,21 @@ class QuoteService {
             nrNotaGerada,
             message: `Nota #${nunotaOrigem} faturada com sucesso para a TOP ${targetTOP}!`
         };
+    }
+    // Retry mechanism with exponential backoff (3 attempts, 2s delay)
+    async withRetry(fn, maxAttempts = 3, delayMs = 2000) {
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                return await fn();
+            }
+            catch (err) {
+                if (attempt === maxAttempts)
+                    throw err;
+                console.warn(`[RETRY] Tentativa ${attempt}/${maxAttempts} falhou. Aguardando ${delayMs}ms...`);
+                await new Promise(r => setTimeout(r, delayMs));
+            }
+        }
+        throw new Error('Max retry attempts exceeded');
     }
     async generateSankhyaPDF(nunota) {
         const fileName = `${nunota}_Orcamento`;
