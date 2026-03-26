@@ -274,7 +274,6 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     const [obsInterna, setObsInterna] = useState('');
     const [pedidoAnexoBase64, setPedidoAnexoBase64] = useState<string | null>(null);
     const [pedidoAnexoName, setPedidoAnexoName] = useState<string | null>(null);
-    const [attachmentMethod, setAttachmentMethod] = useState<'upload' | 'pdf'>('pdf');
     const [checkoutLoading, setCheckoutLoading] = useState(false);
     const [checkoutMessage, setCheckoutMessage] = useState<string | null>(null);
     const [checkoutError, setCheckoutError] = useState<string | null>(null);
@@ -1556,33 +1555,22 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 const obsRes = await obsResp.json();
                 if (!obsRes.success) throw new Error(obsRes.error || 'Falha ao salvar observação');
 
-                // 2. Attach file or PDF
-                if (attachmentMethod === 'pdf') {
-                    const anexoResp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/anexar-pdf`, {
-                        method: "POST",
-                        body: {
-                            dealId: context.crm.objectId,
-                            nunotaPedido: nunotaToUse,
-                            nunotaOrcamento: quoteStatus?.nunota
-                        }
-                    });
-                    const anexoRes = await anexoResp.json();
-                    if (!anexoRes.success) throw new Error(anexoRes.error || 'Falha ao anexar PDF');
-                } else if (attachmentMethod === 'upload' && pedidoAnexoBase64 && pedidoAnexoName) {
-                    const anexoResp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/anexar`, {
-                        method: "POST",
-                        body: {
-                            nunota: nunotaToUse,
-                            descricao: 'Pedido Compra',
-                            fileBase64: pedidoAnexoBase64,
-                            fileName: pedidoAnexoName
-                        }
-                    });
-                    const anexoRes = await anexoResp.json();
-                    if (!anexoRes.success) throw new Error(anexoRes.error || 'Falha ao anexar arquivo');
-                } else {
-                    throw new Error('Você deve selecionar um arquivo ou usar o PDF do orçamento.');
+                // 2. Anexar arquivo obrigatório
+                if (!pedidoAnexoBase64 || !pedidoAnexoName) {
+                    throw new Error('Arquivo é obrigatório. Por favor, anexe um arquivo antes de continuar.');
                 }
+
+                const anexoResp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/anexar`, {
+                    method: "POST",
+                    body: {
+                        nunota: nunotaToUse,
+                        descricao: 'Pedido Compra',
+                        fileBase64: pedidoAnexoBase64,
+                        fileName: pedidoAnexoName
+                    }
+                });
+                const anexoRes = await anexoResp.json();
+                if (!anexoRes.success) throw new Error(anexoRes.error || 'Falha ao anexar arquivo');
 
                 setCheckoutMessage('Observação salva e arquivo anexado com sucesso!');
                 setTimeout(() => setCheckoutSubStep(3), 1500);
@@ -1996,50 +1984,37 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
 
                                         <Divider />
 
-                                        <Text format={{ fontWeight: "bold" }}>📎 Arquivo do Pedido (Obrigatório, máx 2MB)</Text>
+                                        <Text format={{ fontWeight: "bold" }}>📎 Anexar Pedido (Obrigatório, máx 2MB)</Text>
 
-                                        <Select
-                                            name="attachment-method"
-                                            options={[
-                                                { label: "Usar PDF gerado do próprio Orçamento no Sankhya", value: "pdf" },
-                                                { label: "Enviar pedido de compra do cliente em anexo", value: "upload" }
-                                            ]}
-                                            value={attachmentMethod}
-                                            onChange={(val) => {
-                                                setAttachmentMethod(val as 'upload' | 'pdf');
-                                            }}
-                                        />
-
-                                        {attachmentMethod === 'upload' && (
-                                            <Flex direction="column" gap="sm">
-                                                {pedidoAnexoName ? (
-                                                    <Tag variant="success">📄 {pedidoAnexoName}</Tag>
-                                                ) : (
-                                                    // @ts-ignore
-                                                    <Input type="file" name="file-pedido" onChange={handleFileChange as any} accept=".pdf,.png,.jpg,.jpeg" />
-                                                )}
+                                        <Flex direction="column" gap="sm">
+                                            {pedidoAnexoName ? (
+                                                <Tag variant="success">✅ {pedidoAnexoName}</Tag>
+                                            ) : (
+                                                // @ts-ignore
+                                                <Input type="file" name="file-pedido" onChange={handleFileChange as any} accept="*" />
+                                            )}
+                                            {pedidoAnexoBase64 && (
                                                 <Button
-                                                    disabled={!pedidoAnexoBase64}
                                                     onClick={() => {
                                                         setPedidoAnexoBase64(null);
                                                         setPedidoAnexoName(null);
                                                     }}
                                                     size="xs"
+                                                    variant="secondary"
                                                 >
-                                                    Remover anexo
+                                                    🗑️ Remover anexo
                                                 </Button>
-                                            </Flex>
-                                        )}
-                                        <Alert title={attachmentMethod === 'pdf' ? "Gerar Automático" : "Arquivo necessário"} variant="info">
-                                            {attachmentMethod === 'pdf'
-                                                ? "O backend irá gerar o PDF da top de orçamento 999 no Sankhya, anexá-lo ao Deal do HubSpot, e vinculá-lo ao novo pedido TOP 1010 automaticamente."
-                                                : "O pedido de compra do cliente deve ser anexado ao registro no Sankhya antes da confirmação."}
+                                            )}
+                                        </Flex>
+
+                                        <Alert title="Arquivo obrigatório" variant="info">
+                                            Anexe o pedido de compra ou qualquer documentação relacionada (até 2MB). Este arquivo será vinculado ao pedido no Sankhya TOP 1010.
                                         </Alert>
 
                                         <Button
                                             variant="primary"
                                             onClick={handlePrepareOrder}
-                                            disabled={checkoutLoading || !obsInterna.trim() || (attachmentMethod === 'upload' && !pedidoAnexoBase64)}
+                                            disabled={checkoutLoading || !obsInterna.trim() || !pedidoAnexoBase64}
                                         >
                                             {checkoutLoading ? 'Enviando...' : '📤 Enviar OBS, Anexar e Avançar'}
                                         </Button>

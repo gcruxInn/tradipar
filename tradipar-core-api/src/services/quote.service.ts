@@ -414,21 +414,23 @@ class QuoteService {
         const isConfirmed = quoteNrNota !== "0" && (quoteRow[2] === 'L' || quoteRow[2] === 'A');
         const isOrderConfirmed = childrenDetails.some(r => r[1] === 1010 && (r[2] === 'L' || r[2] === 'A'));
 
-        // --- AUTO-HEALING PDF: Enterprise Grade Set-and-Forget ---
-        // Detecta orçamentos confirmados (com NUMNOTA) e anexa PDF automaticamente
-        if (isConfirmed && quoteNrNota !== "0") {
-            try {
-                console.log(`[AUTO-HEALING PDF] Orçamento ${orcNunota} confirmado (NUMNOTA=${quoteNrNota}). Verificando anexo PDF...`);
-                const pdfResult = await this.attachPdfToHubspot(dealId, orcNunota);
-                if ((pdfResult as any).skipped) {
-                    console.log(`[AUTO-HEALING PDF] PDF já anexado anteriormente. Pulando.`);
-                } else {
-                    console.log(`[AUTO-HEALING PDF] PDF anexado com sucesso ao Deal ${dealId}.`);
-                }
-            } catch (pdfErr: any) {
-                console.warn(`[AUTO-HEALING PDF] Falha ao anexar PDF (não-bloqueante):`, pdfErr.message);
-            }
-        }
+        // --- AUTO-HEALING PDF: DISABLED ---
+        // Attachments are now mandatory via handlePrepareOrder in the frontend.
+        // The `/sankhya/pedido/anexar` endpoint handles file uploads explicitly.
+        // Disabling AUTO-HEALING to prevent duplicate attachments.
+        // if (isConfirmed && quoteNrNota !== "0") {
+        //     try {
+        //         console.log(`[AUTO-HEALING PDF] Orçamento ${orcNunota} confirmado (NUMNOTA=${quoteNrNota}). Verificando anexo PDF...`);
+        //         const pdfResult = await this.attachPdfToHubspot(dealId, orcNunota);
+        //         if ((pdfResult as any).skipped) {
+        //             console.log(`[AUTO-HEALING PDF] PDF já anexado anteriormente. Pulando.`);
+        //         } else {
+        //             console.log(`[AUTO-HEALING PDF] PDF anexado com sucesso ao Deal ${dealId}.`);
+        //         }
+        //     } catch (pdfErr: any) {
+        //         console.warn(`[AUTO-HEALING PDF] Falha ao anexar PDF (não-bloqueante):`, pdfErr.message);
+        //     }
+        // }
 
         // --- PROFITABILITY (como no Alef) ---
         let profitability = null;
