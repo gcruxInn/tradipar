@@ -728,19 +728,17 @@ class QuoteService {
         };
         if (targetTOP === 1010) {
             updateProps.sankhya_nu_unico_pedido = String(finalNuNota || "");
-            // Logic: NUMNOTA -> NUMPEDIDO -> NUNOTA
-            const displayNrNota = (nrNotaGerada && nrNotaGerada !== "0" && Number(nrNotaGerada) !== 0)
-                ? nrNotaGerada
-                : (nrPedidoGerado && nrPedidoGerado !== "0" && Number(nrPedidoGerado) !== 0)
-                    ? nrPedidoGerado
-                    : finalNuNota;
-            updateProps.sankhya_nu_nota_pedido = String(displayNrNota || "");
+            // IMPORTANT: sankhya_nu_nota_pedido must be initialized to "0" when TOP 1010 is created
+            // It will be updated to the correct NUMNOTA only after further processing/confirmation
+            // This follows Sankhya's standard pattern: creation prop gets number, number prop starts at 0
+            updateProps.sankhya_nu_nota_pedido = "0";
             updateProps.dealstage = 'presentationscheduled';
         }
         else if (targetTOP === 1100) {
             updateProps.sankhya_nu_unico_nfe = String(finalNuNota || "");
-            const displayNrNota = (nrNotaGerada && nrNotaGerada !== "0" && Number(nrNotaGerada) !== 0) ? nrNotaGerada : finalNuNota;
-            updateProps.sankhya_nunota_final = String(displayNrNota || "");
+            // IMPORTANT: sankhya_nunota_final should be "0" initially, filled after NF-e emission
+            // This follows Sankhya's standard pattern for property initialization
+            updateProps.sankhya_nunota_final = "0";
             updateProps.nu_final_faturamento = String(finalNuNota || "");
             // Attach DANFE BEFORE moving to closed-won (Self-healing with retry)
             let danfeAttached = false;

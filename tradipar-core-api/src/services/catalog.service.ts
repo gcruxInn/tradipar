@@ -488,6 +488,43 @@ class CatalogService {
     })).filter((p: any) => p.codProd);
 
     console.log(`[PROD-SEARCH] Encontrados ${products.length} produtos no HubSpot.`);
+
+    // --- ENRIQUECIMENTO DE ESTOQUE (SANKHYA) ---
+    if (products.length > 0) {
+      try {
+        const productIds = products
+          .map((p: any) => p.codProd)
+          .filter((id: string | number) => id && !isNaN(Number(id)));
+
+        if (productIds.length > 0) {
+          const stockSql = `
+            SELECT
+              CODPROD,
+              SUM(CASE WHEN CODEMP = 1 THEN ESTOQUE - RESERVADO ELSE 0 END) AS MATRIZ,
+              SUM(CASE WHEN CODEMP = 2 THEN ESTOQUE - RESERVADO ELSE 0 END) AS FILIAL
+            FROM TGFEST
+            WHERE CODPROD IN (${productIds.join(',')})
+            GROUP BY CODPROD
+          `;
+
+          const stocks = await this.executeSankhyaQuery(stockSql);
+
+          products.forEach((p: any) => {
+            const s = stocks.find((st: any) => String(st.CODPROD) === String(p.codProd));
+            p.stockMatriz = s ? Number(s.MATRIZ) : 0;
+            p.stockFilial = s ? Number(s.FILIAL) : 0;
+          });
+        }
+      } catch (err: any) {
+        console.error(`[PROD-SEARCH-STOCK] Erro ao buscar estoques: ${err.message}`);
+        // Fallback: garante que as propriedades existam mesmo em erro
+        products.forEach((p: any) => {
+          if (p.stockMatriz === undefined) p.stockMatriz = 0;
+          if (p.stockFilial === undefined) p.stockFilial = 0;
+        });
+      }
+    }
+
     return { success: true, products };
   }
 

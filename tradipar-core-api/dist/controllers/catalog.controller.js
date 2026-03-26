@@ -11,10 +11,22 @@ class CatalogController {
     // public async getStockMultipleProducts(req: Request, res: Response): Promise<void> {
     //   res.status(501).json({ success: false, error: "Method not implemented" });
     // }
-    // POST /hubspot/prices/deal [DEPRECATED - Not Implemented]
-    // public async getDealPrices(req: Request, res: Response): Promise<void> {
-    //   res.status(501).json({ success: false, error: "Method not implemented" });
-    // }
+    // POST /hubspot/prices/deal
+    async getDealPrices(req, res) {
+        try {
+            const { objectId } = req.body;
+            if (!objectId) {
+                res.status(400).json({ success: false, error: "objectId é obrigatório" });
+                return;
+            }
+            const result = await catalog_service_1.catalogService.getDealPrices(objectId);
+            res.json(result);
+        }
+        catch (error) {
+            console.error(`[CATALOG CONTROLLER ERROR] getDealPrices:`, error.message);
+            res.status(500).json({ success: false, error: error.message });
+        }
+    }
     // POST /hubspot/products/search
     async searchProducts(req, res) {
         try {
@@ -41,7 +53,7 @@ class CatalogController {
         }
         catch (error) {
             console.error(`[CATALOG CONTROLLER ERROR]`, error.message);
-            res.status(200).json({ success: false, error: error.message });
+            res.status(500).json({ success: false, error: error.message });
         }
     }
 }
