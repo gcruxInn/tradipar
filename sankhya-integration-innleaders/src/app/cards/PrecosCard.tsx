@@ -1533,12 +1533,12 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             }
         };
 
-        // Load attachments when entering checkout
+        // Load attachments when entering checkout sub-step 2
         useEffect(() => {
             if (currentStep === 2 && checkoutSubStep === 2) {
                 fetchDealAttachments();
             }
-        }, [currentStep, checkoutSubStep]);
+        }, [currentStep, checkoutSubStep, context.crm.objectId]);
 
         // === Helper: Save obs + attach file (sub-step 2) ===
         const handlePrepareOrder = async () => {
@@ -1574,14 +1574,22 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                 }
 
                 const fileId = selectedNote.fileIds[0];
+
+                // Fetch file metadata from HubSpot Files API
                 const fileResp = await hubspot.fetch(`https://api.hubapi.com/files/v3/files/${fileId}`);
                 const fileData = await fileResp.json();
-
-                // Download file and convert to base64
-                const fileUrl = fileData.url;
-                const fileContent = await fetch(fileUrl).then(r => r.arrayBuffer());
-                const fileBase64 = Buffer.from(fileContent).toString('base64');
                 const fileName = fileData.name || `pedido-${nunotaToUse}.pdf`;
+                const fileUrl = fileData.url;
+
+                // Download file and convert to base64 using browser APIs
+                const fileContent = await hubspot.fetch(fileUrl);
+                const blob = await fileContent.blob();
+                const arrayBuffer = await blob.arrayBuffer();
+
+                // Convert ArrayBuffer to base64 using browser's btoa()
+                const uint8Array = new Uint8Array(arrayBuffer);
+                const binaryString = String.fromCharCode.apply(null, Array.from(uint8Array) as any);
+                const fileBase64 = btoa(binaryString);
 
                 // Send to Sankhya
                 const anexoResp = await hubspot.fetch(`${BASE_API_URL}/sankhya/pedido/anexar`, {
