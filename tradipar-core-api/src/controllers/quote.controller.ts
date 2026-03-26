@@ -5,6 +5,7 @@ export class QuoteController {
 
   public async getQuoteStatus(req: Request, res: Response): Promise<void> {
     const { dealId } = req.params;
+    console.log(`[QuoteController] getQuoteStatus called for dealId:`, dealId);
 
     if (!dealId) {
       res.status(400).json({ success: false, error: "Missing dealId" });
@@ -17,7 +18,8 @@ export class QuoteController {
       res.status(200).json(result);
     } catch (error: any) {
       console.error(`[QuoteController] Error getting status for deal ${dealId}:`, error.message);
-      res.status(500).json({ success: false, error: error.message });
+      // HTTP 200 para HubSpot ler o JSON (proxy bloqueia 5xx)
+      res.status(200).json({ success: false, error: error.message });
     }
   }
 
