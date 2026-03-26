@@ -196,7 +196,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
     }, [quoteStatus?.nunota, context.crm.objectId]);
 
     // Batch Control State
-    const [availableControls, setAvailableControls] = useState<Record<string, { controle: string, saldo: number }[]>>({});
+    const [availableControls, setAvailableControls] = useState<Record<string, { label: string; value: string; saldo: number; codigoBarras?: string }[]>>({});
 
     // Navigation State (Hybrid UI)
     const [currentStep, setCurrentStep] = useState(0); // 0: Handshake, 1: Items, 2: Checkout
@@ -235,7 +235,7 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
             const cacheKey = `${item.codProd}-${currentCodEmp}`;
             const controls = availableControls[cacheKey];
             if (controls && controls.length === 1 && !item.sankhyaControle) {
-                const singleControl = controls[0].controle;
+                const singleControl = controls[0].value;
                 handleUpdateItemControl(item.id, singleControl);
             }
         });
@@ -1197,8 +1197,8 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                                                         options={availableControls[`${item.codProd}-${data?.codEmp || ""}`]
                                                             .filter((c: any) => !data?.codEmp || !c.codEmp || String(c.codEmp) === String(data?.codEmp))
                                                             .map(c => ({
-                                                                label: `${c.controle} (${c.saldo})`,
-                                                                value: c.controle
+                                                                label: c.label,
+                                                                value: c.value
                                                             }))}
                                                         value={item.sankhyaControle || ""}
                                                         onChange={(val) => handleUpdateItemControl(item.id, val as string)}
