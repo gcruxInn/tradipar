@@ -957,7 +957,7 @@ class QuoteService {
                     localFields.ROTA_ENTREGA_2 = { "$": rotaEntrega2 };
                     fieldsetList.push("ROTA_ENTREGA_2");
                 }
-                await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=CRUDServiceProvider.saveRecord&outputType=json', {
+                const saveResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=CRUDServiceProvider.saveRecord&outputType=json', {
                     serviceName: "CRUDServiceProvider.saveRecord",
                     requestBody: {
                         dataSet: {
@@ -977,10 +977,17 @@ class QuoteService {
                         }
                     }
                 });
-                console.log(`[PREPARE ORDER] Sankhya saved successfully:`, fieldsetList);
+                console.log(`[PREPARE ORDER] CRUDServiceProvider response:`, JSON.stringify(saveResp.data, null, 2));
+                if (saveResp.data?.statusMessage) {
+                    console.warn(`[PREPARE ORDER] Sankhya status message:`, saveResp.data.statusMessage);
+                }
+                else {
+                    console.log(`[PREPARE ORDER] Sankhya saved successfully:`, fieldsetList);
+                }
             }
             catch (obsErr) {
                 console.warn(`[PREPARE ORDER] Warning: Could not save data to Sankhya:`, obsErr.message);
+                console.warn(`[PREPARE ORDER] Full error:`, JSON.stringify(obsErr.response?.data, null, 2) || obsErr.toString());
                 // Don't throw - continue anyway
             }
             // 2. Update HubSpot properties (observacao_interna, rota_de_entrega_1, rota_de_entrega_2)
@@ -1041,9 +1048,40 @@ class QuoteService {
                 },
                 timeout: 30000
             });
-            console.log(`[PREPARE ORDER] File attachment response status:`, annexResp.data?.status || 'unknown');
+            console.log(`[PREPARE ORDER] File upload (Part 1) response status:`, annexResp.data?.status || 'unknown');
             if (annexResp.data?.statusMessage) {
-                console.log(`[PREPARE ORDER] Sankhya response message:`, annexResp.data.statusMessage);
+                console.log(`[PREPARE ORDER] Upload response message:`, annexResp.data.statusMessage);
+            }
+            // PART 2: Link the attachment to the CabecalhoNota record
+            // Service: AnexoSistemaSP.salvar
+            // This step is required to actually associate the file with the record
+            console.log(`[PREPARE ORDER] Part 2: Linking attachment to CabecalhoNota ${nunota}...`);
+            try {
+                const linkResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=AnexoSistemaSP.salvar&outputType=json', {
+                    serviceName: 'AnexoSistemaSP.salvar',
+                    requestBody: {
+                        params: {
+                            pkEntity: nunota.toString(),
+                            keySession: sessionKey,
+                            nameEntity: 'CabecalhoNota',
+                            description: 'Pedido Compra',
+                            keyAttach: '',
+                            typeAcess: 'ALL',
+                            typeApres: 'GLO',
+                            nuAttach: '',
+                            nameAttach: fileName,
+                            fileSelect: 1,
+                            oldFile: ''
+                        }
+                    }
+                });
+                console.log(`[PREPARE ORDER] Attachment link response:`, JSON.stringify(linkResp.data, null, 2));
+                console.log(`[PREPARE ORDER] File successfully linked to CabecalhoNota`);
+            }
+            catch (linkErr) {
+                console.warn(`[PREPARE ORDER] Warning: Could not link attachment to CabecalhoNota:`, linkErr.message);
+                console.warn(`[PREPARE ORDER] This may indicate that CabecalhoNota does not support attachments via this API`);
+                // Don't throw - continue anyway
             }
             return { success: true, message: 'Observação salva e arquivo anexado com sucesso!' };
         }

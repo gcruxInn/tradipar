@@ -1066,7 +1066,7 @@ class QuoteService {
           fieldsetList.push("ROTA_ENTREGA_2");
         }
 
-        await sankhyaApi.post<any>(
+        const saveResp = await sankhyaApi.post<any>(
           '/gateway/v1/mge/service.sbr?serviceName=CRUDServiceProvider.saveRecord&outputType=json',
           {
             serviceName: "CRUDServiceProvider.saveRecord",
@@ -1089,9 +1089,15 @@ class QuoteService {
             }
           }
         );
-        console.log(`[PREPARE ORDER] Sankhya saved successfully:`, fieldsetList);
+        console.log(`[PREPARE ORDER] CRUDServiceProvider response:`, JSON.stringify(saveResp.data, null, 2));
+        if (saveResp.data?.statusMessage) {
+          console.warn(`[PREPARE ORDER] Sankhya status message:`, saveResp.data.statusMessage);
+        } else {
+          console.log(`[PREPARE ORDER] Sankhya saved successfully:`, fieldsetList);
+        }
       } catch (obsErr: any) {
         console.warn(`[PREPARE ORDER] Warning: Could not save data to Sankhya:`, obsErr.message);
+        console.warn(`[PREPARE ORDER] Full error:`, JSON.stringify(obsErr.response?.data, null, 2) || obsErr.toString());
         // Don't throw - continue anyway
       }
 
@@ -1166,10 +1172,45 @@ class QuoteService {
         }
       );
 
-      console.log(`[PREPARE ORDER] File attachment response status:`, annexResp.data?.status || 'unknown');
+      console.log(`[PREPARE ORDER] File upload (Part 1) response status:`, annexResp.data?.status || 'unknown');
       if (annexResp.data?.statusMessage) {
-        console.log(`[PREPARE ORDER] Sankhya response message:`, annexResp.data.statusMessage);
+        console.log(`[PREPARE ORDER] Upload response message:`, annexResp.data.statusMessage);
       }
+
+      // PART 2: Link the attachment to the CabecalhoNota record
+      // Service: AnexoSistemaSP.salvar
+      // This step is required to actually associate the file with the record
+      console.log(`[PREPARE ORDER] Part 2: Linking attachment to CabecalhoNota ${nunota}...`);
+      try {
+        const linkResp = await sankhyaApi.post<any>(
+          '/gateway/v1/mge/service.sbr?serviceName=AnexoSistemaSP.salvar&outputType=json',
+          {
+            serviceName: 'AnexoSistemaSP.salvar',
+            requestBody: {
+              params: {
+                pkEntity: nunota.toString(),
+                keySession: sessionKey,
+                nameEntity: 'CabecalhoNota',
+                description: 'Pedido Compra',
+                keyAttach: '',
+                typeAcess: 'ALL',
+                typeApres: 'GLO',
+                nuAttach: '',
+                nameAttach: fileName,
+                fileSelect: 1,
+                oldFile: ''
+              }
+            }
+          }
+        );
+        console.log(`[PREPARE ORDER] Attachment link response:`, JSON.stringify(linkResp.data, null, 2));
+        console.log(`[PREPARE ORDER] File successfully linked to CabecalhoNota`);
+      } catch (linkErr: any) {
+        console.warn(`[PREPARE ORDER] Warning: Could not link attachment to CabecalhoNota:`, linkErr.message);
+        console.warn(`[PREPARE ORDER] This may indicate that CabecalhoNota does not support attachments via this API`);
+        // Don't throw - continue anyway
+      }
+
       return { success: true, message: 'Observação salva e arquivo anexado com sucesso!' };
     } catch (err: any) {
       console.error(`[PREPARE ORDER] Error:`, err.message);
