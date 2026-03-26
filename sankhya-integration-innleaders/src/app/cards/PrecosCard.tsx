@@ -765,6 +765,8 @@ const PrecosCard = ({ context, onRefreshProperties, actions }: PrecosCardProps &
                     fetchPrices();
                 }, 500);
                 onRefreshProperties();
+                // Switch to Cart tab to show the newly added item
+                setItemsTab("list");
             } else setError(res.error);
         } catch (e: any) { setError(e.message); }
         finally { setAddingItem(false); }

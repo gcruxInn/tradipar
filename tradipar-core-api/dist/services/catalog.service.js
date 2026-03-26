@@ -503,7 +503,11 @@ class CatalogService {
             requestBody: { sql }
         });
         const rows = queryResp.data?.responseBody?.rows || [];
-        const controls = rows.map((r) => ({ controle: r[0], saldo: parseFloat(r[1]) }));
+        const controls = rows.map((r) => ({
+            label: `${r[0]} (${Number(r[1]).toFixed(0)} un.)`,
+            value: r[0],
+            saldo: parseFloat(r[1])
+        }));
         return { success: true, controls };
     }
     // ================================================================
