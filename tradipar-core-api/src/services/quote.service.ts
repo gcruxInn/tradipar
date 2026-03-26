@@ -2,6 +2,25 @@ import { sankhyaApi } from '../adapters/sankhya.api';
 import { hubspotApi } from '../adapters/hubspot.api';
 import FormData from 'form-data';
 
+// Error parser: Translate Sankhya technical errors to user-friendly messages
+function parseSankhyaError(rawMsg: string): string {
+  const msg = String(rawMsg || '').toLowerCase();
+  if (msg.includes('estoque') || msg.includes('saldo insuficiente'))
+    return 'Estoque insuficiente para faturar este item.';
+  if (msg.includes('cfop'))
+    return 'Erro de CFOP: configuração fiscal incorreta. Contate o suporte.';
+  if (msg.includes('crédito') || msg.includes('limite'))
+    return 'Cliente sem limite de crédito disponível.';
+  if (msg.includes('bloqueado') || msg.includes('liberação'))
+    return 'Pedido aguardando aprovação/liberação.';
+  if (msg.includes('nota já foi faturada') || msg.includes('já faturada'))
+    return 'Esta nota já foi faturada anteriormente.';
+  if (msg.includes('série') || msg.includes('numeração'))
+    return 'Erro de numeração fiscal. Contate o suporte.';
+  // Clean generic message (no stack trace)
+  return rawMsg.split('\n')[0].slice(0, 200);
+}
+
 export interface ProfitabilityResponse {
   success: boolean;
   profitability?: any;
@@ -728,7 +747,7 @@ class QuoteService {
 
     if (billResp.data.status !== "1") {
       console.error(`[ORDER BILLING] All billing attempts failed:`, billResp.data);
-      throw new Error(`Falha ao faturar pedido: ${billResp.data.statusMessage || JSON.stringify(billResp.data)}`);
+      throw new Error(parseSankhyaError(billResp.data.statusMessage || JSON.stringify(billResp.data)));
     }
 
     // Capture the new NUNOTA 
@@ -775,6 +794,18 @@ class QuoteService {
       const displayNrNota = (nrNotaGerada && nrNotaGerada !== "0" && Number(nrNotaGerada) !== 0) ? nrNotaGerada : finalNuNota;
       updateProps.sankhya_nunota_final = String(displayNrNota || "");
       updateProps.nu_final_faturamento = String(finalNuNota || "");
+
+      // Attach DANFE BEFORE moving to closed-won (Self-healing with retry)
+      let danfeAttached = false;
+      try {
+        await this.withRetry(() => this.attachPdfToHubspot(dealId, finalNuNota));
+        danfeAttached = true;
+        console.log(`[ORDER BILLING] DANFE para ${finalNuNota} anexada com sucesso.`);
+      } catch (danfeErr: any) {
+        console.error(`[ORDER BILLING] Falha ao anexar DANFE após retries: ${danfeErr.message}`);
+      }
+
+      // Move to "Closed Won" (always, even if DANFE attachment failed)
       updateProps.dealstage = 'closedwon';
     }
 
@@ -787,6 +818,20 @@ class QuoteService {
       nrNotaGerada,
       message: `Nota #${nunotaOrigem} faturada com sucesso para a TOP ${targetTOP}!`
     };
+  }
+
+  // Retry mechanism with exponential backoff (3 attempts, 2s delay)
+  private async withRetry<T>(fn: () => Promise<T>, maxAttempts = 3, delayMs = 2000): Promise<T> {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await fn();
+      } catch (err: any) {
+        if (attempt === maxAttempts) throw err;
+        console.warn(`[RETRY] Tentativa ${attempt}/${maxAttempts} falhou. Aguardando ${delayMs}ms...`);
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+    }
+    throw new Error('Max retry attempts exceeded');
   }
 
   public async generateSankhyaPDF(nunota: string | number) {

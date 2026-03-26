@@ -172,7 +172,7 @@ export class OrderController {
       res.json(result);
     } catch (error: any) {
       console.error(`[PEDIDO FATURAR ERROR] ${error.message}`);
-      res.status(500).json({ success: false, error: error.message });
+      res.status(200).json({ success: false, error: error.message });
     }
   }
 
