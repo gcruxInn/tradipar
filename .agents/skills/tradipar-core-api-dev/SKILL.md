@@ -36,6 +36,11 @@ Você atua na camada da nova **Enterprise Core API** (`tradipar-core-api/`). Est
    - **Sankhya Upload:** Para `sessionUpload.mge`, utilize `sessionkey=ANEXO_SISTEMA_CabecalhoNota_${nunota}`, `fitem=S` e envie o `Content-Length` manualmente no cabeçalho do `formData`.
    - **HubSpot Sync:** O método `attachFileToHubspot` no `quoteService` deve ser usado para subir o base64 para o HubSpot Files API e criar a nota (Note) vinculada ao Deal.
    - **Workflow:** Geração de PDF no Sankhya -> Upload p/ Sankhya -> Upload p/ HubSpot -> Vínculo c/ Deal.
+   - **Download de Arquivos HubSpot (CRITICO):**
+     - **NUNCA** use `signed-url-redirect` (v2 FileManager API) para download programático — o 302 carrega auth headers pro CDN e retorna HTML.
+     - **SEMPRE** use `GET /files/v3/files/{fileId}/signed-url` (v3 Files API) para obter a CDN URL como JSON.
+     - Baixe o binário com `axios` puro (SEM `hubspotApi`): `axios.get(cdnUrl, { responseType: 'arraybuffer' })`.
+     - No re-upload, inclua o `contentType` explícito no `formData.append` (ex: `image/png`, `application/pdf`).
 
 7. **Workflow de Deploy (Continuous Delivery):**
    - **Compilação:** O Agente deve rodar `npm run build` localmente no WSL.
