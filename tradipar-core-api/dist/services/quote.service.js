@@ -938,19 +938,25 @@ class QuoteService {
     async prepareOrderWithAttachment(dealId, nunota, fileId, obsInterna, rotaEntrega, rotaEntrega2) {
         try {
             console.log(`[PREPARE ORDER] Starting for Deal ${dealId}, NUNOTA ${nunota}, FileID ${fileId}, Rotas: ${rotaEntrega || 'N/A'}, ${rotaEntrega2 || 'N/A'}`);
-            // 1. Save observation to Sankhya
-            // Discovery results:
-            // - OBSERVACAO: standard field (VARCHAR2)
-            // - AD_OBSERVACAOINTERNA: custom field for internal observation
-            // - ROTA_ENTREGA_*: DOES NOT EXIST in TGFCAB
-            // NOTE: Delivery routes are stored in HubSpot only, not in Sankhya
+            // 1. Save observation + delivery route to Sankhya
+            // Discovery results (TGFCAB):
+            // - AD_OBSERVACAOINTERNA: custom field for internal observation (VARCHAR2, 4000)
+            // - AD_CODREGENTREGA: delivery region code (NUMBER) -> references TSIREG.CODREG
+            //   e.g. 40500 = "BAIXADA SANTISTA", 10500 = "BH CENTRO"
+            const extractRouteCode = (route) => route.includes(' - ') ? route.split(' - ')[0].trim() : route.trim();
             try {
                 const localFields = {
                     AD_OBSERVACAOINTERNA: { "$": obsInterna }
                 };
                 const fieldsetList = ["AD_OBSERVACAOINTERNA"];
-                console.log(`[PREPARE ORDER] Saving observation to AD_OBSERVACAOINTERNA (custom field)`);
-                console.log(`[PREPARE ORDER] NOTE: Delivery routes (ROTA_ENTREGA_1/2) do not exist in TGFCAB - stored in HubSpot only`);
+                // Add delivery route if provided (extract numeric code from "40500 - BAIXADA SANTISTA")
+                if (rotaEntrega) {
+                    const routeCode = extractRouteCode(rotaEntrega);
+                    localFields.AD_CODREGENTREGA = { "$": routeCode };
+                    fieldsetList.push("AD_CODREGENTREGA");
+                    console.log(`[PREPARE ORDER] Delivery route: "${rotaEntrega}" -> AD_CODREGENTREGA=${routeCode}`);
+                }
+                console.log(`[PREPARE ORDER] Saving to Sankhya: ${fieldsetList.join(', ')}`);
                 const saveResp = await sankhya_api_1.sankhyaApi.post('/gateway/v1/mge/service.sbr?serviceName=CRUDServiceProvider.saveRecord&outputType=json', {
                     serviceName: "CRUDServiceProvider.saveRecord",
                     requestBody: {
@@ -985,20 +991,21 @@ class QuoteService {
                 // Don't throw - continue anyway
             }
             // 2. Update HubSpot properties (observacao_interna, rota_de_entrega_1, rota_de_entrega_2)
+            // HubSpot expects only the code part (e.g. "40500"), not the full label ("40500 - BAIXADA SANTISTA")
             try {
                 const hsProps = {
                     observacao_interna: obsInterna
                 };
                 if (rotaEntrega) {
-                    hsProps.rota_de_entrega_1 = rotaEntrega;
+                    hsProps.rota_de_entrega_1 = extractRouteCode(rotaEntrega);
                 }
                 if (rotaEntrega2) {
-                    hsProps.rota_de_entrega_2 = rotaEntrega2;
+                    hsProps.rota_de_entrega_2 = extractRouteCode(rotaEntrega2);
                 }
                 await hubspot_api_1.hubspotApi.patch(`/crm/v3/objects/deals/${dealId}`, {
                     properties: hsProps
                 });
-                console.log(`[PREPARE ORDER] HubSpot properties updated:`, Object.keys(hsProps));
+                console.log(`[PREPARE ORDER] HubSpot properties updated:`, JSON.stringify(hsProps));
             }
             catch (hsErr) {
                 console.warn(`[PREPARE ORDER] Warning: Could not update HubSpot properties:`, hsErr.message);
@@ -1027,9 +1034,9 @@ class QuoteService {
             // 3. Attach file to Sankhya using sessionUpload.mge endpoint
             // IMPORTANT: CabecalhoNota does NOT support attachments via API
             // Using ItemNota (first item) as per official Sankhya documentation
-            const timestamp = Date.now().toString().substring(5);
             const itemSequencia = "1"; // First item in the order
-            const sessionKey = `ANEXO_SISTEMA_ItemNota_${nunota}_${itemSequencia}_${timestamp}`;
+            // sessionKey format per Sankhya docs: ANEXO_SISTEMA_{entity}_{pk} (NO timestamp)
+            const sessionKey = `ANEXO_SISTEMA_ItemNota_${nunota}_${itemSequencia}`;
             console.log(`[PREPARE ORDER] Attaching file to ItemNota (sequence ${itemSequencia}) with sessionKey: ${sessionKey}`);
             // Use FormData for multipart upload (Sankhya requires specific format)
             const formData = new form_data_1.default();
@@ -1041,7 +1048,7 @@ class QuoteService {
                 headers: {
                     ...formData.getHeaders(),
                     'Content-Length': contentLength,
-                    'Accept': 'application/json'
+                    'Accept': 'text/html'
                 },
                 timeout: 30000
             });
