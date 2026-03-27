@@ -1,3 +1,4 @@
+import axios from 'axios';
 import { sankhyaApi } from '../adapters/sankhya.api';
 import { hubspotApi } from '../adapters/hubspot.api';
 import FormData from 'form-data';
@@ -1124,96 +1125,140 @@ class QuoteService {
       }
 
       // 3. Fetch file metadata from HubSpot Files API
-      const fileResp = await hubspotApi.get<any>(`/files/v3/files/${fileId}`);
+      let fileResp = await hubspotApi.get<any>(`/files/v3/files/${fileId}`);
       console.log(`[PREPARE ORDER] File metadata response:`, JSON.stringify(fileResp.data, null, 2));
 
       const fileName = fileResp.data?.name || `pedido-${nunota}.pdf`;
-      const fileUrl = fileResp.data?.url;
 
-      if (!fileUrl) {
-        throw new Error(`File URL not found for ${fileId}. Response: ${JSON.stringify(fileResp.data)}`);
-      }
+      // 4. Make file publicly accessible so Sankhya can view it via URL
+      // HubSpot deal attachments are HIDDEN_PRIVATE by default
+      if (fileResp.data?.access !== 'PUBLIC_NOT_INDEXABLE' && fileResp.data?.access !== 'PUBLIC_INDEXABLE') {
+        console.log(`[PREPARE ORDER] Making file ${fileId} public (current access: ${fileResp.data?.access})...`);
 
-      console.log(`[PREPARE ORDER] Downloading file ${fileId}: ${fileName}, URL: ${fileUrl}`);
+        // PATCH doesn't work for record-attachments (returns 200 but doesn't change access)
+        // Go straight to re-upload: download via signed URL, then POST as PUBLIC_NOT_INDEXABLE
+        try {
+          console.log(`[PREPARE ORDER] Re-uploading file as public...`);
+          const fileUrl = fileResp.data?.url;
+          if (!fileUrl) throw new Error('No signed URL available for download');
 
-      // 4. Download file from HubSpot
-      let fileBase64: string;
-      try {
-        const fileContent = await hubspotApi.get<any>(fileUrl, { responseType: 'arraybuffer' });
-        fileBase64 = Buffer.from(fileContent.data).toString('base64');
-        console.log(`[PREPARE ORDER] File downloaded successfully, size: ${fileBase64.length}`);
-      } catch (downloadErr: any) {
-        console.error(`[PREPARE ORDER] Download error for URL ${fileUrl}:`, downloadErr.message);
-        throw downloadErr;
-      }
+          // Use /files/v3/files/{id}/signed-url to get a CDN URL that doesn't require auth
+          // (signed-url-redirect does a 302 that leads to login page or 400)
+          const signedRes = await hubspotApi.get<any>(`/files/v3/files/${fileId}/signed-url`);
+          const cdnUrl = signedRes.data?.url;
+          if (!cdnUrl) throw new Error(`No CDN URL returned from signed-url endpoint: ${JSON.stringify(signedRes.data)}`);
+          console.log(`[PREPARE ORDER] Got signed CDN URL: ${cdnUrl.substring(0, 100)}...`);
 
-      // 3. Attach file to Sankhya using sessionUpload.mge endpoint
-      // IMPORTANT: CabecalhoNota does NOT support attachments via API
-      // Using ItemNota (first item) as per official Sankhya documentation
-      const itemSequencia = "1"; // First item in the order
-      // sessionKey format per Sankhya docs: ANEXO_SISTEMA_{entity}_{pk} (NO timestamp)
-      const sessionKey = `ANEXO_SISTEMA_ItemNota_${nunota}_${itemSequencia}`;
+          // Download binary from CDN with plain axios (no auth needed, no Content-Type interference)
+          const fileContent = await axios.get(cdnUrl, {
+            responseType: 'arraybuffer',
+            timeout: 30000,
+            headers: { Accept: '*/*' }
+          });
+          const fileBuffer = Buffer.from(fileContent.data);
+          console.log(`[PREPARE ORDER] Downloaded buffer: ${fileBuffer.length} bytes, first bytes: [${fileBuffer.slice(0, 8).join(',')}]`);
+          const ext = fileResp.data?.extension || fileName.split('.').pop() || 'bin';
+          const uploadName = fileName.includes('.') ? fileName : `${fileName}.${ext}`;
 
-      console.log(`[PREPARE ORDER] Attaching file to ItemNota (sequence ${itemSequencia}) with sessionKey: ${sessionKey}`);
+          console.log(`[PREPARE ORDER] Downloaded ${fileBuffer.length} bytes, re-uploading as ${uploadName}...`);
 
-      // Use FormData for multipart upload (Sankhya requires specific format)
-      const formData = new FormData();
-      const fileBuffer = Buffer.from(fileBase64, 'base64');
-      formData.append('arquivo', fileBuffer, { filename: fileName, knownLength: fileBuffer.length });
+          const formData = new FormData();
+          const mimeMap: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', pdf: 'application/pdf', webp: 'image/webp' };
+          const contentType = mimeMap[ext.toLowerCase()] || 'application/octet-stream';
+          formData.append('file', fileBuffer, { filename: uploadName, contentType, knownLength: fileBuffer.length });
+          formData.append('options', JSON.stringify({
+            access: 'PUBLIC_NOT_INDEXABLE',
+            overwrite: false
+          }));
+          formData.append('folderPath', '/sankhya-attachments');
 
-      const contentLength = formData.getLengthSync();
-      console.log(`[PREPARE ORDER] Uploading ${fileName} (${fileBuffer.length} bytes, Content-Length: ${contentLength})`);
+          const reuploadResp = await hubspotApi.post<any>('/files/v3/files', formData, {
+            headers: { ...formData.getHeaders(), 'Content-Length': formData.getLengthSync() },
+            timeout: 30000
+          });
+          console.log(`[PREPARE ORDER] Re-upload response:`, JSON.stringify(reuploadResp.data, null, 2));
 
-      const annexResp = await sankhyaApi.post<any>(
-        `/gateway/v1/mge/sessionUpload.mge?sessionkey=${sessionKey}&fitem=S&salvar=S&useCache=N`,
-        formData,
-        {
-          headers: {
-            ...formData.getHeaders(),
-            'Content-Length': contentLength,
-            'Accept': 'text/html'
-          },
-          timeout: 30000
+          if (reuploadResp.data?.id) {
+            fileResp = reuploadResp as any;
+            console.log(`[PREPARE ORDER] New public file ID: ${reuploadResp.data.id}, access: ${reuploadResp.data.access}, URL: ${reuploadResp.data.defaultHostingUrl}`);
+          }
+        } catch (reuploadErr: any) {
+          console.warn(`[PREPARE ORDER] Re-upload failed:`, reuploadErr.response?.status, JSON.stringify(reuploadErr.response?.data || reuploadErr.message));
+          // Continue with original (private) URL as last resort
         }
-      );
-
-      console.log(`[PREPARE ORDER] File upload (Part 1) response status:`, annexResp.data?.status || 'unknown');
-      if (annexResp.data?.statusMessage) {
-        console.log(`[PREPARE ORDER] Upload response message:`, annexResp.data.statusMessage);
       }
 
-      // PART 2: Link the attachment to the ItemNota record
-      // Service: AnexoSistemaSP.salvar
-      // Using ItemNota (not CabecalhoNota) as per official Sankhya documentation
-      // CabecalhoNota does NOT support attachments via API
-      console.log(`[PREPARE ORDER] Part 2: Linking attachment to ItemNota ${nunota}_${itemSequencia}...`);
+      const publicUrl = fileResp.data?.defaultHostingUrl || fileResp.data?.url || '';
+      if (!publicUrl) {
+        throw new Error(`No accessible URL for file ${fileId}. Response: ${JSON.stringify(fileResp.data)}`);
+      }
+
+      // 5. Attach file to Sankhya via TSIATA (Anotações system)
+      // Discovery: sessionUpload.mge returns HTML, BLOB CONTEUDO is ignored by CRUD
+      // Solution: Use LINK field with public HubSpot URL for viewing
+      const fileExt = (fileResp.data?.extension || fileName.split('.').pop() || '').toLowerCase();
+      const fullFileName = fileName.includes('.') ? fileName : `${fileName}.${fileExt}`;
+      const tipoConteudo = fileExt === 'pdf' ? 'P' : ['png','jpg','jpeg','gif','bmp','webp'].includes(fileExt) ? 'I' : 'N';
+
+      console.log(`[PREPARE ORDER] Attaching to TSIATA: ${fullFileName}, ext=${fileExt}, tipo=${tipoConteudo}, url=${publicUrl}`);
+
+      // Create TSIATA record via CRUDServiceProvider.saveRecord (entity "Anexo")
+      // LINK field stores the public URL for viewing the file
+      console.log(`[PREPARE ORDER] Creating TSIATA record for NUNOTA ${nunota} with LINK...`);
       try {
-        const linkResp = await sankhyaApi.post<any>(
-          '/gateway/v1/mge/service.sbr?serviceName=AnexoSistemaSP.salvar&outputType=json',
+        const localFields: any = {
+          CODATA: { "$": nunota.toString() },
+          TIPO: { "$": "N" },
+          DESCRICAO: { "$": "Pedido Compra" },
+          ARQUIVO: { "$": fullFileName },
+          TIPOCONTEUDO: { "$": tipoConteudo },
+          EDITA: { "$": "N" },
+          SEQUENCIA: { "$": "0" },
+          SEQUENCIAPR: { "$": "0" },
+          CODUSU: { "$": "0" },
+          PUBLICO: { "$": "N" },
+          LINK: { "$": publicUrl }
+        };
+
+        const fieldsList = Object.keys(localFields).join(",");
+        console.log(`[PREPARE ORDER] Fields: ${fieldsList}`);
+
+        const anexoResp = await sankhyaApi.post<any>(
+          '/gateway/v1/mge/service.sbr?serviceName=CRUDServiceProvider.saveRecord&outputType=json',
           {
-            serviceName: 'AnexoSistemaSP.salvar',
+            serviceName: "CRUDServiceProvider.saveRecord",
             requestBody: {
-              params: {
-                pkEntity: `${nunota}_${itemSequencia}`,
-                keySession: sessionKey,
-                nameEntity: 'ItemNota',
-                description: 'Pedido Compra',
-                keyAttach: '',
-                typeAcess: 'ALL',
-                typeApres: 'GLO',
-                nuAttach: '',
-                nameAttach: fileName,
-                fileSelect: 1,
-                oldFile: ''
+              dataSet: {
+                rootEntity: "Anexo",
+                includePresentationFields: "N",
+                dataRow: {
+                  localFields,
+                  key: {
+                    CODATA: { "$": nunota.toString() },
+                    TIPO: { "$": "N" },
+                    DESCRICAO: { "$": "Pedido Compra" },
+                    SEQUENCIA: { "$": "0" },
+                    SEQUENCIAPR: { "$": "0" }
+                  }
+                },
+                entity: {
+                  fieldset: {
+                    list: fieldsList
+                  }
+                }
               }
             }
           }
         );
-        console.log(`[PREPARE ORDER] Attachment link response:`, JSON.stringify(linkResp.data, null, 2));
-        console.log(`[PREPARE ORDER] File successfully linked to ItemNota`);
-      } catch (linkErr: any) {
-        console.warn(`[PREPARE ORDER] Warning: Could not link attachment to ItemNota:`, linkErr.message);
-        console.warn(`[PREPARE ORDER] Full error:`, JSON.stringify(linkErr.response?.data, null, 2) || linkErr.toString());
+        console.log(`[PREPARE ORDER] TSIATA record response:`, JSON.stringify(anexoResp.data, null, 2));
+        if (anexoResp.data?.status === '1') {
+          console.log(`[PREPARE ORDER] File registered in TSIATA with public LINK`);
+        } else {
+          console.warn(`[PREPARE ORDER] TSIATA save status:`, anexoResp.data?.statusMessage || 'unknown');
+        }
+      } catch (anexoErr: any) {
+        console.warn(`[PREPARE ORDER] Warning: Could not create TSIATA record:`, anexoErr.message);
+        console.warn(`[PREPARE ORDER] Full error:`, JSON.stringify(anexoErr.response?.data, null, 2) || anexoErr.toString());
         // Don't throw - continue anyway
       }
 
